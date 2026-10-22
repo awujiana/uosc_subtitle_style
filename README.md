@@ -16,18 +16,32 @@
 
 ## 目录
 
-- [项目简介](#项目简介)
-- [核心功能](#核心功能)
-- [快速开始](#快速开始)
-- [使用说明](#使用说明)
-- [在 uosc 控制栏加按钮（uosc.conf）](#在-uosc-控制栏加按钮uoscconf)
-- [配置项](#配置项)
-- [兼容性与注意事项](#兼容性与注意事项)
-- [测试](#测试)
-- [来源与许可](#来源与许可)
-- [关联仓库](#关联仓库)
-- [作者联系方式](#作者联系方式)
-- [开源协议](#开源协议)
+- [uosc\_subtitle\_style](#uosc_subtitle_style)
+  - [目录](#目录)
+  - [项目简介](#项目简介)
+  - [核心功能](#核心功能)
+  - [快速开始](#快速开始)
+    - [安装（30 秒）](#安装30-秒)
+    - [绑定按键（可选）](#绑定按键可选)
+    - [运行依赖](#运行依赖)
+  - [使用说明](#使用说明)
+    - [uosc 菜单](#uosc-菜单)
+    - [预览](#预览)
+    - [命令消息（script-message）](#命令消息script-message)
+    - [数据文件](#数据文件)
+  - [在 uosc 控制栏加按钮（uosc.conf）](#在-uosc-控制栏加按钮uoscconf)
+    - [语法](#语法)
+    - [在哪改](#在哪改)
+    - [示例一：加一个「字幕样式」按钮（呼出菜单）](#示例一加一个字幕样式按钮呼出菜单)
+    - [示例二：加多个按钮（菜单 / 字体选择器 / 重新扫描字体）](#示例二加多个按钮菜单--字体选择器--重新扫描字体)
+    - [示例三：状态切换按钮（cycle，进阶）](#示例三状态切换按钮cycle进阶)
+  - [配置项](#配置项)
+  - [兼容性与注意事项](#兼容性与注意事项)
+  - [测试](#测试)
+  - [来源与许可](#来源与许可)
+  - [关联仓库](#关联仓库)
+  - [作者联系方式](#作者联系方式)
+  - [开源协议](#开源协议)
 
 ---
 
@@ -101,6 +115,15 @@ ALT+Q script-message-to uosc_subtitle_style open-menu    # 字幕样式菜单
 呼出菜单后，顶部是**编辑目标**（主字幕 / 次字幕），下面是位置预设、缩放、字体、字号、
 粗体、主色、描边、预设样式等区。所有修改即时生效并写入记忆；次字幕加载与否自动决定
 「次字幕」项是否可点。
+
+
+### 预览
+[![image.png](https://img.meituan.net/content/50ff6c2b3c5bbe2b66cc363ac948bc85356475.png)](https://img.meituan.net/content/50ff6c2b3c5bbe2b66cc363ac948bc85356475.png)
+[![image.png](https://img.meituan.net/content/1e35c10e718a0c79f640fa255e3b1115376117.png)](https://img.meituan.net/content/1e35c10e718a0c79f640fa255e3b1115376117.png)
+[![image.png](https://img.meituan.net/content/736a4a418027744a4cf2f8e23b2f233f429096.png)](https://img.meituan.net/content/736a4a418027744a4cf2f8e23b2f233f429096.png)
+[![image.png](https://img.meituan.net/content/7856c0c121fb14cee2286b83d5d1772d417958.png)](https://img.meituan.net/content/7856c0c121fb14cee2286b83d5d1772d417958.png)
+[![image.png](https://img.meituan.net/content/049ea738320986af80c11bcc7e461259322402.png)](https://img.meituan.net/content/049ea738320986af80c11bcc7e461259322402.png)
+
 
 ### 命令消息（script-message）
 
@@ -179,7 +202,7 @@ uosc 的 `controls` 里加一个 `command:` 按钮、把点击动作指向这条
 ```conf
 <has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式
 ```
-
+[![fbba665ca97f2816.png](https://img.meituan.net/content/4290cf0f128fad52ebe9db2cecdc99a48169.png)](https://img.meituan.net/content/4290cf0f128fad52ebe9db2cecdc99a48169.png)
 - `<has_sub>`：只有加载了字幕（内封或外挂）才显示这个按钮；
 - `tune`：用「调节」图标；
 - 点击执行 `script-message-to uosc_subtitle_style open-menu`，即呼出本脚本菜单；
