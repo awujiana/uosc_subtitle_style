@@ -292,14 +292,17 @@ def main():
     check('stream-no-lua-errors', len(serrs) == 0, '; '.join(serrs[:2]))
 
     # ---- 5. 预设样式：彩色才套用 / 白色保持原样 / 预设可修改并缓存 ----
-    # 五个真机用例（每次独立运行，watch-later 已隔离）：
+    # 六个真机用例（每次独立运行，watch-later 已隔离）：
     #   A 彩色 fixture + 出厂预设 → 自动套用（override=force / 粗细 2 / 白字）
     #   B 白色 fixture            → 只报告不修改（override=scale / 粗细 0.5）
     #   C 白色 fixture            → 改样式 + preset-save → 断言落盘
     #   D 删 state 留 preset 缓存 → 重启 → 彩色套用缓存预设（洋红/绿描边/4）
     #   E 彩色 fixture + 次字幕轨（双语）→ 双轨跳过：不套用（override=scale /
     #     粗细 0.5），且字幕带保持黄色（与 A 同 fixture 差分 ⇒ 证明是双语生效而非偶然）
+    #   F 白字 + 紫描边(#481081) fixture → 描边是彩色 ⇒ 判彩色并转黑白（override=force /
+    #     白字），字幕带由紫描边变黑描边（与 A 差分：A 考彩字变白，F 考彩描边也触发）
     FIXTURE_COLORED = os.path.join(ROOT, 'tools', 'sub-style-smoke-colored.ass')
+    FIXTURE_PURPLE = os.path.join(ROOT, 'tools', 'sub-style-smoke-purple.ass')
 
     def probe_of(text):
         rs = {}
@@ -363,6 +366,12 @@ def main():
             os.remove(p)
     te = run_preset_case(PROBE_PRESET, FIXTURE_COLORED, 'preset-e', 'kept-dual',
                          sec_fixture=FIXTURE_SEC)
+    # F：白字 + 紫描边（#481081）——主色白非彩，但描边紫是彩色 ⇒ 判彩色并转黑白。
+    #    与 A 的差分：A 是彩字（黄）转白；F 是白字+彩描边，专考「描边色也参与彩色判定」。
+    for p in (STATE_FILE, PRESET_FILE):
+        if os.path.exists(p):
+            os.remove(p)
+    tf = run_preset_case(PROBE_PRESET, FIXTURE_PURPLE, 'preset-f', 'applied')
 
     for tag, text, names in (
             ('a', ta, ('early-shot', 'late-shot', 'preset-auto-applied')),
@@ -370,7 +379,8 @@ def main():
             ('c', tc, ('preset-file-written', 'preset-save-keeps-current')),
             ('d', td, ('early-shot', 'late-shot', 'preset-auto-applied')),
             ('e', te, ('early-shot', 'late-shot', 'dual-track-present',
-                       'preset-kept-dual'))):
+                       'preset-kept-dual')),
+            ('f', tf, ('early-shot', 'late-shot', 'preset-auto-applied'))):
         rs = probe_of(text)
         for name in names:
             if name not in rs:
@@ -423,8 +433,8 @@ def main():
 
     # 字幕带 y 区间（640x360，pos=100 实测 y304-328；uosc 底栏在 y>348）
     BAND_LO, BAND_HI = 295, 335
-    # 报告出现：A/B/D/E 的左上角区域都应有大量新像素（报告显示 6s 窗口）
-    for tag in ('a', 'b', 'd', 'e'):
+    # 报告出现：A/B/D/E/F 的左上角区域都应有大量新像素（报告显示 6s 窗口）
+    for tag in ('a', 'b', 'd', 'e', 'f'):
         d = report_region_diff('preset-%s-early' % tag, 'preset-%s-late' % tag)
         check('preset-%s-report-shown' % tag, d is not None and d > 50,
               'diff=%s' % (d,))
@@ -463,9 +473,25 @@ def main():
           e_late_yellow is not None and e_late_yellow > 100
           and (e_late_white is None or e_late_white < e_late_yellow * 0.25),
           'yellow=%s white=%s' % (e_late_yellow, e_late_white))
+    # F：白字 + 紫描边。早图（未套用）字幕带应有紫(#481081)；套用后描边转黑 ⇒ 紫消失。
+    #    与 A 差分：A 考「彩字变白」，F 考「白字+彩描边也判彩色、描边转黑」。
+    def is_purple(r, g, b):
+        return b > 90 and b - r > 40 and b - g > 60
+    f_early_purple = band_color_count('preset-f-early', BAND_LO, BAND_HI, is_purple)
+    f_late_purple = band_color_count('preset-f-late', BAND_LO, BAND_HI, is_purple)
+    f_late_white = band_color_count('preset-f-late', BAND_LO, BAND_HI,
+                                    lambda r, g, b: r > 225 and g > 225 and b > 225)
+    check('preset-f-early-has-purple', f_early_purple is not None and f_early_purple > 50,
+          'purple=%s' % (f_early_purple,))
+    check('preset-f-late-purple-gone',
+          f_late_purple is not None and f_early_purple is not None
+          and f_late_purple < f_early_purple * 0.2,
+          'purple %s → %s' % (f_early_purple, f_late_purple))
+    check('preset-f-late-has-white', f_late_white is not None and f_late_white > 100,
+          'white=%s' % (f_late_white,))
 
     perrs = []
-    for tag, text in (('a', ta), ('b', tb), ('c', tc), ('d', td), ('e', te)):
+    for tag, text in (('a', ta), ('b', tb), ('c', tc), ('d', td), ('e', te), ('f', tf)):
         for l in text.splitlines():
             if 'Lua error' in l or 'traceback' in l:
                 perrs.append(tag + ':' + l)

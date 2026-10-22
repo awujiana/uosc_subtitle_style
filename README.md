@@ -64,7 +64,7 @@
 | 位置自动避让 | 两轨 `sub-pos` 至少相差 `pos_min_gap`（默认 25），目标轨设新位置时另一轨自动让位 |
 | 字体选择器 | 枚举本机全部 sfnt/TTC 字体（含 CJK 标记），懒加载 + 签名缓存，支持重新扫描 |
 | 样式覆盖 | 字体、字号（720p 等效像素）、粗体、主色、描边粗细、描边颜色 |
-| 预设样式 | 载入时自动套用；仅彩色字幕生效、双语（双轨）默认跳过；可改可存可恢复出厂 |
+| 预设样式 | 载入时自动套用；仅彩色字幕生效（主色或描边任一为彩即算）、双语（双轨）默认跳过；可改可存可恢复出厂 |
 | 样式检测报告 | 载入后自动解析外挂 ASS / 内封字幕配色，左上角报告「已套用 / 保持原样 / 双语跳过」及原因 |
 | 状态持久化 | 当前样式跨文件、跨重启记忆（`persist=yes`，数据文件在 mpv 配置目录） |
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
@@ -259,7 +259,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `preset_skip_dual` | `yes` | **双语字幕（双轨）默认不套用、不改颜色** |
 | `preset_color` / `preset_outline` / `preset_outline_color` | `#FFFFFF` / `2` / `#000000` | 预设主色/描边粗细/描边色 |
 | `preset_font` / `preset_size` / `preset_bold` | 空 / `0` / `keep` | 预设字体/字号/粗体（空或 `keep` = 不动） |
-| `colored_threshold` | `40` | 判定「彩色字幕」的最小饱和度（max-min(RGB)） |
+| `colored_threshold` | `40` | 判定「彩色字幕」的最小饱和度（max-min(RGB)，主色与描边色分别判定，任一达标即算） |
 | `inspect_delay` / `report_ms` | `1.2` / `6000` | 载入后检测等待（秒）/ 报告显示时长（毫秒） |
 | `rebuild_delay` | `0.12` | override 切换的延迟设置（秒） |
 | `fallback_cycle` | `yes` | 无 uosc 时降级为循环切换 |
@@ -283,13 +283,13 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 仓库自带完整的单测与真机端到端测试（改代码后请先跑门禁，判据是退出码与汇总行）：
 
 ```bash
-# 单元测试（149 断言，stub 掉 mpv API，任意目录可跑）
+# 单元测试（159 断言，stub 掉 mpv API，任意目录可跑）
 ../luajit.exe tools/sub-style-test.lua
 
 # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 # ）
 C:/Python314/python.exe tools/sub-style-conf-verify.py
 
-# 真机 E2E（75 断言：分轨/状态/重置/字体选择器/字幕流连续性/预设五用例/截图视觉判据）
+# 真机 E2E（83 断言：分轨/状态/重置/字体选择器/字幕流连续性/预设六用例/截图视觉判据）
 # 需要 mpv.exe；Pillow 视觉判据需要装 Pillow 的 Python
 MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
 ```

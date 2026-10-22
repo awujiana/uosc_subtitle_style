@@ -1383,15 +1383,27 @@ local function sample_rendered_colors()
     local arr = {}
     for k, v in pairs(counts) do arr[#arr + 1] = {k = '#' .. k, v = v} end
     table.sort(arr, function(p, q) return p.v > q.v end)
-    -- 主色 = 出现最多的颜色；描边色 = 出现最多的「暗色」
-    local color, outline
+    -- 主色 = 出现最多的「亮色」；描边色 = 出现最多的「暗色」；
+    -- accent = 出现最多的「高饱和」色（彩字或彩色描边都归它——白字+紫描边时主色是白、
+    -- 而描边亮度落在 60~100 的缝档里两头不沾，只能靠 accent 抓到）
+    local color, outline, accent
     for _, it in ipairs(arr) do
         local rr, gg, bb = it.k:match('^#(%x%x)(%x%x)(%x%x)$')
-        local lum = (tonumber(rr, 16) + tonumber(gg, 16) + tonumber(bb, 16)) / 3
-        if not color and lum >= 100 then color = it.k end
-        if not outline and lum < 60 then outline = it.k end
+        if rr then
+            local r2, g2, b2 = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
+            local lum = (r2 + g2 + b2) / 3
+            if not color and lum >= 100 then color = it.k end
+            if not outline and lum < 60 then outline = it.k end
+            if not accent and (math.max(r2, g2, b2) - math.min(r2, g2, b2)) >= o.colored_threshold then
+                accent = it
+            end
+        end
     end
-    return {color = color, outline_color = outline, total = total}
+    -- 没有暗色描边、但存在高饱和色且不是主色本身时，把它当描边色报告（如紫描边白字）
+    if not outline and accent and accent.k ~= color then outline = accent.k end
+    -- 差分已剔除背景，计数里只剩字幕像素 ⇒ 高饱和色占比 ≥2% 即判「彩色字幕」
+    local colored = accent ~= nil and (accent.v / total) >= 0.02
+    return {color = color, outline_color = outline, total = total, colored = colored}
 end
 
 -- 是否「彩色」：饱和度 max-min(RGB) ≥ 阈值
@@ -1427,11 +1439,17 @@ local function inspect_style()
                 info.color = s.color
                 info.outline_color = s.outline_color
                 info.embedded_fonts = {}
+                info.colored = s.colored
             end
         end
     end
     if not info.color and not info.font then return nil end
-    info.colored = is_colored_hex(info.color)
+    -- 彩色判定：主色或描边色任一饱和即算「彩色」（白字+紫描边也要转黑白）。
+    -- 像素采样路径已在 sample_rendered_colors 里按 accent 算好（info.colored 非 nil），
+    -- 这里只兜底外挂 ASS 解析路径。
+    if info.colored == nil then
+        info.colored = is_colored_hex(info.color) or is_colored_hex(info.outline_color)
+    end
     return info
 end
 

@@ -37,14 +37,14 @@
 | `~~/uosc-subtitle-style-state.json` | 运行时状态（主/次分轨记忆，自动生成） |
 | `~~/uosc-subtitle-style-preset.json` | 预设样式缓存（载入时套用的目标样式，自动生成） |
 | `~~/uosc-subtitle-style-fonts.json` | 字体枚举缓存（带签名，自动生成） |
-| `tools/sub-style-test.lua` | 单元测试（stub mpv 运行时 + 虚拟文件系统），149 项 |
-| `tools/sub-style-e2e.py` | 真机 E2E 编排（三阶段：双轨视觉 + 字幕流连续性 + 预设样式五用例；仓库模式 `--config-dir` 隔离） |
+| `tools/sub-style-test.lua` | 单元测试（stub mpv 运行时 + 虚拟文件系统），159 项 |
+| `tools/sub-style-e2e.py` | 真机 E2E 编排（三阶段：双轨视觉 + 字幕流连续性 + 预设样式六用例；仓库模式 `--config-dir` 隔离） |
 | `tools/sub-style-conf-verify.py` | conf 静态门禁（按 mpv 解析语义复算） |
 | `tools/sub-style-probe.lua` | E2E 阶段一探针（双字幕轨、25 条断言） |
 | `tools/sub-style-probe-stream.lua` | E2E 阶段二探针（多句 fixture，字幕流连续性） |
 | `tools/sub-style-probe-preset.lua` | E2E 阶段三探针（套用/保持断言 + 前后对比截图） |
 | `tools/sub-style-probe-preset-save.lua` | E2E 阶段三探针（改样式 + 存预设 + 落盘断言） |
-| `tools/sub-style-smoke.ass` / `-sec.ass` / `-multi.ass` / `-colored.ass` | fixture（主轨 / 次轨 / 多句 / 彩色） |
+| `tools/sub-style-smoke.ass` / `-sec.ass` / `-multi.ass` / `-colored.ass` / `-purple.ass` | fixture（主轨 / 次轨 / 多句 / 彩色主色 / 白字紫描边） |
 
 ---
 
@@ -322,7 +322,7 @@ file-loaded ──► apply_all(false)（恢复记忆的位置/样式）
                      ├─ inspect_style()  检测主色/描边色/字体/字号/内封字体
                      │    ① 外挂轨：parse_ass_file()（[V4+ Styles] Default + [Fonts] 段）
                      │    ② 内封轨：sample_rendered_colors()（screenshot-raw 双帧差分）
-                     ├─ is_colored_hex()   饱和度 max-min(RGB) ≥ colored_threshold(40)
+                     ├─ 彩色判定：主色或描边色任一饱和即算（见下方「彩色判定」）
                      ├─ 分支一：has_secondary_track() 且 preset.skip_dual
                      │     → 双语跳过：不套用、不改颜色（报告第三行说明原因）
                      ├─ 分支二：preset.enabled 且 (非 only_colored 或 colored)
@@ -339,6 +339,14 @@ E2E 用差分证明：同一个彩色 fixture，单轨（A）套用变白、双�
 **数据源优先级**：外挂文件解析（精确）> 像素采样（内封可用，要求 `sub-text` 非空且
 当前未处于我方 force 配色——force 会把 ASS 配色扁平化，采出来全是预设色）。
 
+**彩色判定（2026-10-22 补强：描边色也参与）**：`info.colored = is_colored_hex(主色) or
+is_colored_hex(描边色)`——**白字 + 紫描边**（主色 #FFFFFF 非彩、描边 #481081 是彩）也必须
+判彩色并转黑白，否则紫描边字幕会被「非彩色保持原样」漏掉。像素采样路径另算：双帧差分已剔除
+背景，计数里只剩字幕像素，取**出现最多的高饱和色**（accent，饱和度 ≥ colored_threshold）
+占比 ≥2% 即判彩色。accent 机制同时解决了「描边亮度落在 60~100 缝档、按亮度分桶（亮≥100 算
+主色 / 暗<60 算描边）两头不沾」的漏判——亮度分桶只用于报告主色/描边色，不再决定彩色与否；
+无暗色描边而存在高饱和色时，把它当描边色报告。
+
 **预设缓存**：`~~/uosc-subtitle-style-preset.json`（enabled/only_colored/skip_dual/color/
 outline_color/outline/font/size/bold）。启动时 `load_preset()` 读取并逐字段覆盖出厂值；
 `preset-save`/`preset-reset`/三个开关都会立即落盘。状态文件（`uosc-subtitle-style-state.json`）
@@ -352,7 +360,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，149 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`，159 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -365,9 +373,14 @@ E2E 有还原断言。
 开关与恢复出厂 / `flash_tl` 对齐还原 /
 **双语跳过与开关（T34-T35）/ 避让间距可配（T36）/ 报告时长可配（T37）**。
 
+**白字+紫描边判彩色（2026-10-22，T27b 外挂 / T31b 像素）**：主色 #FFFFFF 非彩但描边
+#481081 是彩 ⇒ 两条路径都必须判彩色并转黑白（force / 白字 / 黑描边）。回归点：彩色判定
+曾只看主色，且紫描边亮度 ~72 落在「亮≥100 / 暗<60」亮度分桶缝档里两头不沾、整个漏判。
+
 变异验证（2026-10-22，证明上述新用例有牙）：
 双语跳过恒不生效 → 3 用例红；`pos_min_gap` 硬编码 25 → T36 红；
-`report_ms` 硬编码 6000 → T37 红。
+`report_ms` 硬编码 6000 → T37 红；
+彩色判定回退成「只看主色 + 像素 accent 恒 false」→ T27b 4 条 + T31b 2 条 + 黄字像素用例共 7 红。
 
 ### 11.2 真机 E2E（`tools/sub-style-e2e.py`，三阶段）
 
@@ -378,7 +391,7 @@ E2E 有还原断言。
 按 `playback-time` 逐句校验「显示文本 == 期望事件」，
 覆盖基线 / 字号编辑后 / 字体编辑后三个窗口（实测各 15 个采样 0 失配）。
 
-**阶段三（预设样式五用例，每次独立运行）**：
+**阶段三（预设样式六用例，每次独立运行）**：
 
 | 用例 | fixture | 预期 | 断言 |
 | --- | --- | --- | --- |
@@ -387,6 +400,7 @@ E2E 有还原断言。
 | C | multi | 修改并保存 | preset.json 落盘含 #FF00FF/#00FF00/4；当前轨样式不被 save 反向覆盖 |
 | D | colored + C 的缓存 | 套用缓存预设 | sub-color=#FF00FF / 粗细 4；字幕带出现洋红像素 |
 | E | colored + 次轨（双语） | 双轨跳过不套用 | `dual-track-present`（防真空：确认 secondary-sid 真的加载）/ override=scale / 粗细=加载基线；报告出现；字幕带**保持黄色**（与 A 同 fixture 差分） |
+| F | purple（白字 #FFFFFF + 紫描边 #481081） | 描边是彩色 ⇒ 判彩色并转黑白 | override=force / 白字 / 黑描边；报告出现；字幕带**紫→无紫**（early purple=2397 → late=0，与 A 差分：A 考彩字变白，F 考彩描边也触发） |
 
 > ⚠ 每个用例前必须清 `uosc-subtitle-style-state.json`：persist=true 会让上一个用例退出时
 > `save_state()` 写下的状态被下一个进程继承（产品设计，测试要干净起点）。

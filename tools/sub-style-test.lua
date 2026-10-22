@@ -1020,6 +1020,28 @@ check('inspect-white-no-force', env.props['sub-ass-override'] == 'scale',
     tostring(env.props['sub-ass-override']))
 restore17()
 
+-- T27b 白字 + 紫描边（外挂 ASS）：主色白非彩，但描边 #481081 是彩色 ⇒ 判彩色并转黑白。
+-- 回归：彩色判定曾只看主色，白字+彩描边被漏判成「非彩色」而不转黑白。
+local restore17b = fresh_script_env()
+set_tracks(false)
+-- &H00811048 = #481081（BB=81, GG=10, RR=48）
+env.vfs['C:/fake-config/white-purple.ass'] = make_ass('&H00FFFFFF', '&H00811048')
+set_external_track('C:/fake-config/white-purple.ass')
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.messages['inspect']()
+check('inspect-white-purple-applies', env.props['sub-color'] == '#FFFFFF',
+    tostring(env.props['sub-color']))
+check('inspect-white-purple-outline-set', env.props['sub-outline-color'] == '#000000',
+    tostring(env.props['sub-outline-color']))
+flush_timers()  -- override→force 是延迟切换，冲完计时器再断言
+check('inspect-white-purple-force', env.props['sub-ass-override'] == 'force',
+    tostring(env.props['sub-ass-override']))
+local rpt_wp = last_showtext() or ''
+check('inspect-white-purple-report-outline', rpt_wp:find('描边 #481081', 1, true) ~= nil, rpt_wp)
+check('inspect-white-purple-applied-line', rpt_wp:find('已套用预设样式', 1, true) ~= nil, rpt_wp)
+restore17b()
+
 -- T28 饱和度阈值边界（默认 40，含等号）
 local restore18 = fresh_script_env()
 set_tracks(false)
@@ -1143,6 +1165,45 @@ check('inspect-pixels-outline', rpt_p:find('描边 #000000', 1, true) ~= nil, rp
 check('inspect-pixels-colored-applies', env.props['sub-color'] == '#FFFFFF',
     tostring(env.props['sub-color']))
 restore21()
+
+-- T31b 像素采样：白字 + 紫描边（#481081）——主色白（非彩），但描边紫是彩色，
+-- 必须判「彩色」并转黑白。回归：曾因彩色判定只看主色、且描边亮度 ~72 落在
+-- 「亮≥100 算主色 / 暗<60 算描边」的缝档里两头不沾，导致整个漏判。
+local restore21b = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-text'] = '内封字幕文本'
+env.props['track-list'] = {{type = 'sub', id = 1}}  -- 内封：无 external-filename
+local PX_WHITE = {0xFF, 0xFF, 0xFF}    -- #FFFFFF
+local PX_PURPLE = {0x81, 0x10, 0x48}   -- #481081（bgr0）
+-- 采样点 (0,0)/(0,2)/(2,0)/(2,2)：白、紫、紫、白 ⇒ 主色白、accent 紫、无暗色描边
+env.raw_shots = {
+    subtitles = synth_frame({
+        {PX_WHITE, PX_PURPLE, PX_PURPLE, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+        {PX_PURPLE, GRAY, PX_WHITE, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+    }),
+    video = synth_frame({
+        {GRAY, GRAY, GRAY, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+    }),
+}
+load_script()
+env.messages['inspect']()
+local rpt_pp = last_showtext() or ''
+check('inspect-purple-px-source', rpt_pp:find('内封字幕(像素采样)', 1, true) ~= nil, rpt_pp)
+check('inspect-purple-px-main', rpt_pp:find('主色 #FFFFFF', 1, true) ~= nil, rpt_pp)
+-- 紫描边靠 accent 抓到并当描边色报告
+check('inspect-purple-px-outline', rpt_pp:find('描边 #481081', 1, true) ~= nil, rpt_pp)
+-- 描边紫是彩色 ⇒ 套用预设（转黑白）
+check('inspect-purple-px-applies', env.props['sub-color'] == '#FFFFFF',
+    tostring(env.props['sub-color']))
+check('inspect-purple-px-outline-set', env.props['sub-outline-color'] == '#000000',
+    tostring(env.props['sub-outline-color']))
+restore21b()
 
 -- T32 flash_tl：临时改 OSD 对齐，显示后必须还原（否则用户后续 OSD 全跑左上角）
 local restore22 = fresh_script_env()
