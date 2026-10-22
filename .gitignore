@@ -1,0 +1,18 @@
+# 运行时数据文件（~~/ 落点：mpv 配置目录；E2E 跑完会清理，这里双保险）
+/uosc-subtitle-style-state.json
+/uosc-subtitle-style-preset.json
+/uosc-subtitle-style-fonts.json
+
+# E2E 临时复制的 uosc（--config-dir 模式让 mpv 自动加载用，跑完即清）
+/scripts/uosc/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+desktop.ini
