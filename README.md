@@ -20,6 +20,7 @@
 - [核心功能](#核心功能)
 - [快速开始](#快速开始)
 - [使用说明](#使用说明)
+- [在 uosc 控制栏加按钮（uosc.conf）](#在-uosc-控制栏加按钮uoscconf)
 - [配置项](#配置项)
 - [兼容性与注意事项](#兼容性与注意事项)
 - [测试](#测试)
@@ -140,6 +141,83 @@ ALT+Q script-message-to uosc_subtitle_style open-menu    # 字幕样式菜单
 | `uosc-subtitle-style-preset.json` | 预设样式（颜色/描边/字体/字号/粗体/开关） |
 | `uosc-subtitle-style-fonts.json` | 本机字体枚举缓存（按目录签名失效） |
 
+## 在 uosc 控制栏加按钮（uosc.conf）
+
+uosc 的播放控制栏（`controls`）是在它**自己的**配置文件 `script-opts/uosc.conf` 里定义的
+（不是本脚本的 `uosc_subtitle_style.conf`）。本脚本的所有功能都通过
+`script-message-to uosc_subtitle_style <消息>` 暴露（见上方「命令消息」表），所以只要在
+uosc 的 `controls` 里加一个 `command:` 按钮、把点击动作指向这条消息，就能在控制栏上多一个
+一键触发本脚本的按钮。
+
+### 语法
+
+`controls` 是一串**逗号分隔**的条目，每个条目可选带可见性条件前缀 `<条件>`，整体格式：
+
+```text
+<可见条件>command:<图标名>:<点击时执行的 mpv 命令>?<悬停提示>
+```
+
+- **可见条件（可选）**：`<has_sub>` 仅当有字幕时显示；常用还有 `<video>` / `<audio>` /
+  `<idle>` / `<stream>`，取反加 `!`（如 `<!idle>` 表示非空闲时）。多个条件用 `,` 或
+  ` *+ *` 组合成「或 / 与」组（例如 `<video,audio>`、`<audio+!video>`）。
+- **kind**：`command:` 表示「点击执行一条 mpv 命令」；此外还有 `button:`（uosc 内置按钮名，
+  如 `subtitles` / `fullscreen`）、`script-binding:`（脚本绑定）、`cycle:`（状态切换按钮）、
+  `space` / `gap`（分隔）。本脚本用 `command:` 最合适。
+- **图标名**：Material Symbols 图标名，例如 `tune`（调节）、`format_color_text`（文字颜色）、
+  `text_fields`（字体）、`font_download`（字体下载）、`refresh`（重新扫描）。找不到的图标名
+  会被渲染成文字，换一个即可。
+- **命令**：填 `script-message-to uosc_subtitle_style <消息>`，`<消息>` 取上方表格任意一项。
+- **悬停提示**：`?` 后面是鼠标悬停显示的文字（中文直接写，无需引号）。
+
+### 在哪改
+
+打开 mpv 配置目录下的 `script-opts/uosc.conf`，找到里面那一长行 `controls=...`，
+把新条目**用逗号**拼进现有列表即可（建议放在靠近 `subtitles` 的位置）。
+
+### 示例一：加一个「字幕样式」按钮（呼出菜单）
+
+```conf
+<has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式
+```
+
+- `<has_sub>`：只有加载了字幕（内封或外挂）才显示这个按钮；
+- `tune`：用「调节」图标；
+- 点击执行 `script-message-to uosc_subtitle_style open-menu`，即呼出本脚本菜单；
+- `?字幕样式`：鼠标悬停提示。
+
+拼到 `controls=` 里长这样（片段示意）：
+
+```conf
+controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式,<has_sub>subtitles,...
+```
+
+### 示例二：加多个按钮（菜单 / 字体选择器 / 重新扫描字体）
+
+```conf
+<has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式,
+<has_sub>command:font_download:script-message-to uosc_subtitle_style open-fonts?字体选择器,
+<has_sub>command:refresh:script-message-to uosc_subtitle_style rescan-fonts?重新扫描字体
+```
+
+（三个条目用逗号连写；`<has_sub>` 让它们在无字幕时自动隐藏。）
+
+### 示例三：状态切换按钮（cycle，进阶）
+
+若希望按钮能反映「预设开关」的开 / 关并随状态换图标，需要本脚本先注册一个可被 uosc 观察的
+属性。本脚本当前**未**注册此类属性，所以最稳妥是用上面的 `command:` 按钮触发
+`preset-toggle-enabled`（点击即切换，但图标不随状态变化）。等脚本注册了属性后，可用
+`cycle:` 语法（4 个参数：kind、观察属性、点击命令、状态组）：
+
+```conf
+<has_sub>cycle:prop_name:script-message-to uosc_subtitle_style preset-toggle-enabled:on=toggle_on/off=toggle_off?预设开关
+```
+
+> [!TIP]
+> - 改完保存 `uosc.conf` 后**重启 mpv** 才生效（uosc 不热加载 `controls` 配置）。
+> - 图标名清单见 [uosc 仓库](https://github.com/tomasklaen/uosc)（Material Symbols）；
+>   图标名写错只会显示成文字，换一个正确的即可，不影响功能。
+> - 不想要按钮了，把对应条目从 `controls=` 里删掉即可。
+
 ## 配置项
 
 全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，25 项与脚本默认值一一对应）。
@@ -214,6 +292,7 @@ uosc 是可选依赖：探测到（`UOSC_MAIN` 环境变量，或 mpv 旁 `porta
 ## 作者联系方式
 
 - GitHub：[@awujiana](https://github.com/awujiana)
+- 邮箱：[bingshanlengtie@qq.com](mailto:bingshanlengtie@qq.com)
 - 问题反馈：[Issues](https://github.com/awujiana/uosc_subtitle_style/issues) ｜ [Discussions](https://github.com/awujiana/uosc_subtitle_style/discussions)
 
 ## 开源协议
