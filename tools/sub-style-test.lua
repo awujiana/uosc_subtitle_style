@@ -1357,6 +1357,181 @@ local last_dur = env.showtext_durs[#env.showtext_durs]
 check('report-ms-configurable', last_dur == 1234, tostring(last_dur))
 restore27()
 
+--------------------------------------------------------------------
+-- T38 自动预设不跨文件泄漏：彩色字幕自动套用预设(auto)后，切到非彩色字幕应恢复
+--     该字幕原样（不再继承上个彩色视频的预设）；再切彩色会重新套用。
+--     回归：曾因 apply_preset 写入 state 且无 auto 标记，file-loaded 时被 apply_all
+--     重新套到非彩色字幕上（报告却显示"保持原样"——画面与报告不一致）。
+--------------------------------------------------------------------
+local restore28 = fresh_script_env()
+set_tracks(false)
+env.props['sub-ass-override'] = 'scale'   -- mpv 基线（load 时被 baseline 捕获）
+-- 文件1：彩色外挂 → inspect 自动套用预设
+env.vfs['C:/fake-config/leak-color.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
+set_external_track('C:/fake-config/leak-color.ass')
+load_script()
+env.messages['inspect']()
+flush_timers()
+check('leak-color-applied', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+check('leak-color-auto-flag-persisted',
+    (env.vfs[STATE_PATH] or ''):find('"auto":true', 1, true) ~= nil, env.vfs[STATE_PATH])
+-- 文件2：非彩色外挂（白字黑边）。模拟 mpv reset-on-next-file 已把属性复位
+env.vfs['C:/fake-config/leak-white.ass'] = make_ass('&H00FFFFFF', '&H00000000')
+set_external_track('C:/fake-config/leak-white.ass')
+env.props['sub-color'] = nil
+env.props['sub-ass-override'] = 'scale'
+env.events['file-loaded']()
+flush_timers()  -- 跑完 run_inspect（白字 → 不套用，报告"保持原样"）
+check('leak-white-color-not-inherited', env.props['sub-color'] == nil, tostring(env.props['sub-color']))
+check('leak-white-no-force', env.props['sub-ass-override'] == 'scale', tostring(env.props['sub-ass-override']))
+check('leak-white-report-keep-original',
+    (last_showtext() or ''):find('非彩色字幕，保持原样', 1, true) ~= nil, last_showtext())
+-- 文件3：又变彩色 → 重新套用预设（证明清除不影响彩色检测/套用）
+env.vfs['C:/fake-config/leak-color2.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
+set_external_track('C:/fake-config/leak-color2.ass')
+env.props['sub-color'] = nil
+env.props['sub-ass-override'] = 'scale'
+env.events['file-loaded']()
+flush_timers()
+check('leak-recolored-applies-again', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+restore28()
+
+--------------------------------------------------------------------
+-- T38b 手动样式跨文件持久：用户手动改的样式(auto=false)在 file-loaded 时不被清除
+--       （持久化特性不被"防泄漏"修复破坏）。
+--------------------------------------------------------------------
+local restore29 = fresh_script_env()
+set_tracks(false)
+env.props['sub-ass-override'] = 'scale'
+env.vfs['C:/fake-config/man-a.ass'] = make_ass('&H00FFFFFF', '&H00000000')
+set_external_track('C:/fake-config/man-a.ass')
+load_script()
+env.messages['color']('#123456')   -- 用户手动设一个可辨识的颜色 ⇒ auto=false
+check('manual-color-set', env.props['sub-color'] == '#123456', tostring(env.props['sub-color']))
+check('manual-no-auto-flag',
+    (env.vfs[STATE_PATH] or ''):find('"auto":true', 1, true) == nil, env.vfs[STATE_PATH])
+-- 切文件：手动样式应保留（不被 clear_auto_style 清除）
+env.vfs['C:/fake-config/man-b.ass'] = make_ass('&H00FFFFFF', '&H00000000')
+set_external_track('C:/fake-config/man-b.ass')
+env.props['sub-color'] = nil
+env.props['sub-ass-override'] = 'scale'
+env.events['file-loaded']()
+check('manual-color-persists-across-file', env.props['sub-color'] == '#123456', tostring(env.props['sub-color']))
+restore29()
+
+--------------------------------------------------------------------
+-- T39 CN+JP 双语自动布局：按语言识别，日文轨置底+缩小，中文轨其上
+--------------------------------------------------------------------
+local function set_dual_lang(main_lang, sec_lang, files)
+    set_tracks(true)
+    env.props['sid'] = 1
+    env.props['secondary-sid'] = 2
+    if files then
+        env.props['track-list'] = {
+            {type = 'sub', id = 1, external = true, ['external-filename'] = files[1]},
+            {type = 'sub', id = 2, external = true, ['external-filename'] = files[2]},
+        }
+    else
+        env.props['track-list'] = {
+            {type = 'sub', id = 1, lang = main_lang},
+            {type = 'sub', id = 2, lang = sec_lang},
+        }
+    end
+end
+
+local restore30 = fresh_script_env()
+set_dual_lang('chi', 'jpn')   -- 主=中(内封 lang)，次=日
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+check('dual-layout-cn-pos', env.props['sub-pos'] == 75, tostring(env.props['sub-pos']))
+check('dual-layout-cn-scale-unchanged', env.props['sub-scale'] == 1, tostring(env.props['sub-scale']))
+check('dual-layout-jp-pos', env.props['secondary-sub-pos'] == 100, tostring(env.props['secondary-sub-pos']))
+check('dual-layout-jp-scale', math.abs((env.props['secondary-sub-scale'] or 0) - 0.8) < 0.001,
+    tostring(env.props['secondary-sub-scale']))
+check('dual-layout-no-color-change', env.props['sub-color'] == nil, tostring(env.props['sub-color']))
+-- 布局是 per-file 覆盖层，不写状态文件（不跨文件泄漏）
+check('dual-layout-not-persisted', (env.vfs[STATE_PATH] or '') == '', env.vfs[STATE_PATH])
+restore30()
+
+-- T40 反向：主=日、次=中 → 日文(主)轨置底+缩小，中文(次)轨其上
+local restore31 = fresh_script_env()
+set_dual_lang('jpn', 'chi')
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+check('dual-layout-rev-jp-pos', env.props['sub-pos'] == 100, tostring(env.props['sub-pos']))
+check('dual-layout-rev-jp-scale', math.abs((env.props['sub-scale'] or 0) - 0.8) < 0.001,
+    tostring(env.props['sub-scale']))
+check('dual-layout-rev-cn-pos', env.props['secondary-sub-pos'] == 75, tostring(env.props['secondary-sub-pos']))
+check('dual-layout-rev-cn-scale', env.props['secondary-sub-scale'] == 1,
+    tostring(env.props['secondary-sub-scale']))
+restore31()
+
+-- T41 非「一中一日」不布局（日+英）；dual_layout=no 时中日也不布局
+local restore32 = fresh_script_env()
+set_dual_lang('jpn', 'eng')
+env.props['sub-ass-override'] = 'scale'
+env.props['sub-pos'] = 100
+env.props['secondary-sub-pos'] = 0
+load_script()
+env.events['file-loaded']()
+check('dual-layout-none-main-pos-kept', env.props['sub-pos'] == 100, tostring(env.props['sub-pos']))
+check('dual-layout-none-sec-pos-kept', env.props['secondary-sub-pos'] == 0, tostring(env.props['secondary-sub-pos']))
+restore32()
+local restore32b = fresh_script_env()
+set_dual_lang('chi', 'jpn')
+env.opt_overrides['dual_layout'] = false   -- 关掉布局
+env.props['sub-ass-override'] = 'scale'
+env.props['sub-pos'] = 100
+env.props['secondary-sub-pos'] = 0
+load_script()
+env.events['file-loaded']()
+check('dual-layout-disabled-main-kept', env.props['sub-pos'] == 100, tostring(env.props['sub-pos']))
+check('dual-layout-disabled-sec-kept', env.props['secondary-sub-pos'] == 0, tostring(env.props['secondary-sub-pos']))
+restore32b()
+
+-- T42 用户手动设位置/缩放即关闭本次布局（手动优先，且跨 playback-restart 保持）
+local restore33 = fresh_script_env()
+set_dual_lang('chi', 'jpn')
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+check('dual-layout-manual-before', env.props['sub-pos'] == 75, tostring(env.props['sub-pos']))
+env.messages['pos']('60')   -- 用户手动设主字幕位置（cur 默认 main）
+check('dual-layout-manual-wins', env.props['sub-pos'] == 60, tostring(env.props['sub-pos']))
+env.events['playback-restart']()   -- 重新应用：布局已关，主字幕保持手动的 60
+check('dual-layout-manual-stays-after-restart', env.props['sub-pos'] == 60, tostring(env.props['sub-pos']))
+restore33()
+
+-- T43 布局不跨文件泄漏：中日文件后再开「日+英」文件，位置不被拽成布局值
+local restore34 = fresh_script_env()
+set_dual_lang('chi', 'jpn')
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+check('dual-layout-leak-first-applied', env.props['secondary-sub-pos'] == 100,
+    tostring(env.props['secondary-sub-pos']))
+env.props['track-list'] = {{type = 'sub', id = 1, lang = 'jpn'}, {type = 'sub', id = 2, lang = 'eng'}}
+env.props['sub-pos'] = 100          -- 模拟 mpv reset-on-next-file
+env.props['secondary-sub-pos'] = 0
+env.events['file-loaded']()
+check('dual-layout-no-leak-main', env.props['sub-pos'] == 100, tostring(env.props['sub-pos']))
+check('dual-layout-no-leak-sec', env.props['secondary-sub-pos'] == 0, tostring(env.props['secondary-sub-pos']))
+restore34()
+
+-- T44 外挂轨语言识别：mpv 不给 lang(恒 nil)，从文件名语言标记(.chi./.jpn.)猜
+local restore35 = fresh_script_env()
+set_dual_lang(nil, nil, {'C:/subs/show.chi.ass', 'C:/subs/show.jpn.ass'})
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+check('dual-layout-ext-cn-pos', env.props['sub-pos'] == 75, tostring(env.props['sub-pos']))
+check('dual-layout-ext-jp-pos', env.props['secondary-sub-pos'] == 100, tostring(env.props['secondary-sub-pos']))
+check('dual-layout-ext-jp-scale', math.abs((env.props['secondary-sub-scale'] or 0) - 0.8) < 0.001,
+    tostring(env.props['secondary-sub-scale']))
+restore35()
+
 restore13(); restore14()
 
 restore(); restore2(); restore3(); restore4(); restore5(); restore6(); restore7()

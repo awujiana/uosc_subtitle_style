@@ -65,6 +65,8 @@
 | 字体选择器 | 枚举本机全部 sfnt/TTC 字体（含 CJK 标记），懒加载 + 签名缓存，支持重新扫描 |
 | 样式覆盖 | 字体、字号（720p 等效像素）、粗体、主色、描边粗细、描边颜色 |
 | 预设样式 | 载入时自动套用；仅彩色字幕生效（主色或描边任一为彩即算）、双语（双轨）默认跳过；可改可存可恢复出厂 |
+| 彩色预设不串台 | 自动套用预设只对彩色字幕生效；切到黑白字幕自动恢复该字幕原样，不继承上个彩色视频的预设（内封/外挂均适用） |
+| 中日双语布局 | 双轨按语言识别为一中一日时，日文轨自动置底 + 缩小（默认 ×0.8）、中文轨在其上；带 `\pos` 的注释幕样式/位置不变 |
 | 样式检测报告 | 载入后自动解析外挂 ASS / 内封字幕配色，左上角报告「已套用 / 保持原样 / 双语跳过」及原因 |
 | 状态持久化 | 当前样式跨文件、跨重启记忆（`persist=yes`，数据文件在 mpv 配置目录） |
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
@@ -251,6 +253,8 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `persist` | `yes` | 跨文件/重启记忆当前样式 |
 | `pos_default` / `sec_pos_default` | `100` / `0` | 主/次字幕默认位置（mpv 原生默认值） |
 | `pos_min_gap` | `25` | 两轨位置避让的最小间距（% 屏幕高度） |
+| `dual_layout` | `yes` | 中日双语(双轨)自动布局：按语言识别，日文轨置底+缩小、中文轨其上；注释幕(`\pos`)不变 |
+| `dual_layout_scale` | `0.8` | 双语布局中日文轨的缩放倍率（视觉上日文小于中文） |
 | `nudge` | `5` | 菜单微调步长 |
 | `fonts` | Noto CJK 四款 | 字体候选列表（逗号分隔） |
 | `sizes` / `colors` / `outlines` / `outline_colors` | 见 conf | 各属性候选（`标签=值` 或裸值） |
@@ -283,7 +287,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 仓库自带完整的单测与真机端到端测试（改代码后请先跑门禁，判据是退出码与汇总行）：
 
 ```bash
-# 单元测试（159 断言，stub 掉 mpv API，任意目录可跑）
+# 单元测试（191 断言，stub 掉 mpv API，任意目录可跑）
 ../luajit.exe tools/sub-style-test.lua
 
 # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 # ）

@@ -54,8 +54,8 @@
 
 ```lua
 state = {
-    main = { pos, scale, font, size, bold, color, outline, outline_color },
-    sec  = { pos, scale, font, size, bold, color, outline, outline_color },
+    main = { pos, scale, font, size, bold, color, outline, outline_color, auto },
+    sec  = { pos, scale, font, size, bold, color, outline, outline_color, auto },
     target = 'main' | 'sec',   -- 当前编辑目标（样式通道的归属轨）
 }
 
@@ -81,18 +81,20 @@ preset = {
 | `outline` | number | `sub-outline-size` | 用字幕自带描边 |
 | `outline_color` | string `#RRGGBB` | `sub-outline-color` | 用字幕自带描边色 |
 | `color` | string `#RRGGBB` | `sub-color`（主颜色） | 用字幕自带主色 |
+| `auto` | bool | 当前样式是否由**彩色检测自动套用预设**写入（非用户手动，见 §10.3） | 用户手动样式，跨文件持久 |
 
 ### 3.2 持久化格式
 
 ```json
 {
-  "main": {"pos": 100, "scale": 1, "font": "...", "size": 24, "outline": 2, "outline_color": "#FF0000"},
+  "main": {"pos": 100, "scale": 1, "font": "...", "size": 24, "outline": 2, "outline_color": "#FF0000", "auto": true},
   "sec":  {"pos": 75,  "scale": 1},
   "target": "main"
 }
 ```
 
 - 写入时机：任何修改后立即写（`save_state`）；`persist=no` 时完全不写。
+- `auto` 仅在为 `true` 时写入（自动预设套用的标记，见 §10.3）；缺失按 `false`（用户手动）处理。
 - **旧格式迁移**：早期版本是扁平结构 `{pos, scale, sec_pos, font, size, bold}`，
   `load_state` 检测到无 `main`/`sec` 键即按旧格式读入主轨、`sec_pos` 进次轨。
 - 重新应用时机：`file-loaded` / `playback-restart`。原因：用户 `mpv.conf` 的
@@ -235,6 +237,27 @@ mpv 的原生默认是 **主字幕 `sub-pos=100`（底部）、次字幕 `second
 - **加载/复位不做强制分离**：mpv 默认本身不重叠；若用户配置把两轨设成同一位置，
   那是用户的选择，脚本不抢方向盘（早期版本在加载期强制分离，正是踩坑来源之一）。
 
+### 6.4 中日双语自动布局（`dual_layout`，per-file 覆盖层）
+
+双轨按语言识别为「一中 + 一日」时，`file-loaded` 计算一个 **per-file 布局覆盖层**
+`layout = {main={pos,scale}, sec={pos,scale}}`，`apply_all` 用它覆盖两轨位置/缩放：
+**日文轨置底（sub-pos 100）+ 缩放 `dual_layout_scale`（默认 0.8），中文轨在其上
+（`100 - pos_min_gap`，默认 75）、缩放不变**。
+
+- **语言识别双路**：内封轨读 `track-list[].lang`；外挂轨 mpv **不给 lang（恒 `nil`）**
+  （2026-10-23 实测 `plain.ass`/`show.jpn.ass`/`show.chi.ass` 的 lang 全是 nil），
+  改从**文件名/标题的语言标记**猜——点分段 + 括号段里找 `chi/zho/zh/cmn/chs/sc/gb/cn`
+  （中）与 `jpn/ja/jp`（日）。识别不确定（非一中一日）则**不布局**，保持 mpv 原样。
+- **per-file、不泄漏**：`layout` 是模块级变量，每个 `file-loaded` 用 `compute_layout()`
+  重算覆盖；**不写状态文件**。切到非中日双语文件 → `compute_layout` 返回 nil → 回到
+  §6.2「拥有才回写」，不会被上个视频的布局值拽动。
+- **用户优先**：用户手动设位置/缩放（`set_pos`/`set_scale`）或外部改动（`adopt_external`）
+  即 `layout=nil` 关闭本次布局，手动值进 state 并持久。
+- **注释幕不受影响（真机实证）**：`\pos` 注释幕是 libass explicit/signs，对 `sub-pos`
+  **和 `sub-scale` 都豁免**——实测 scale 1→0.4 时无 `\pos` 对白行高度 30→11，
+  而 `\pos` 注释行恒定 30。故日文对白变小、注释幕样式/位置原样保留，正合需求。
+- 与颜色预设**正交**：双轨默认 `preset_skip_dual=yes`（不改颜色，见 §10），布局只管位置/缩放。
+
 ---
 
 ## 7. 本机字体枚举（字体选择器数据源）
@@ -347,6 +370,17 @@ is_colored_hex(描边色)`——**白字 + 紫描边**（主色 #FFFFFF 非彩�
 主色 / 暗<60 算描边）两头不沾」的漏判——亮度分桶只用于报告主色/描边色，不再决定彩色与否；
 无暗色描边而存在高饱和色时，把它当描边色报告。
 
+**自动预设不跨文件串台（2026-10-23，`auto` 标记 + `clear_auto_style`）**：`apply_preset`
+把白字/黑描边写进 `state` 并 `save_state()`，与用户手动样式无区分时，下一个**黑白**字幕
+会在 `file-loaded` 被 `apply_all` 重新套上上个彩色视频的预设——报告却显示「保持原样」，
+画面与报告不一致（且泄漏的 force+白字会让内封轨的像素检测被 `not wants_force` 挡掉）。
+修法：给轨加 `auto` 标记——`apply_preset(quiet, is_auto)` 在**彩色检测自动套用**时置
+`auto=true`，用户手动改任何样式字段 / 手动 `preset-apply` 置 `auto=false`（并持久化）。
+`file-loaded` 先 `clear_auto_style` 清掉 `auto=true` 轨的样式字段，再 `apply_all`，
+使新文件从「字幕原样」起；随后 `run_inspect` 若判定彩色再套用。效果：彩色→预设、
+切黑白→恢复该字幕原样、再切彩色→重新套用；用户手动样式依旧跨文件持久。附带好处：
+清除后内封轨像素检测能看到原配色，二次检测不再被上一处 force 干扰。
+
 **预设缓存**：`~~/uosc-subtitle-style-preset.json`（enabled/only_colored/skip_dual/color/
 outline_color/outline/font/size/bold）。启动时 `load_preset()` 读取并逐字段覆盖出厂值；
 `preset-save`/`preset-reset`/三个开关都会立即落盘。状态文件（`uosc-subtitle-style-state.json`）
@@ -360,7 +394,7 @@ E2E 有还原断言。
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`，159 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`,191 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -377,10 +411,23 @@ E2E 有还原断言。
 #481081 是彩 ⇒ 两条路径都必须判彩色并转黑白（force / 白字 / 黑描边）。回归点：彩色判定
 曾只看主色，且紫描边亮度 ~72 落在「亮≥100 / 暗<60」亮度分桶缝档里两头不沾、整个漏判。
 
+**自动预设不串台（2026-10-23，T38 / T38b）**：彩色外挂 → inspect 套用预设（`auto` 落盘）
+→ 切非彩色外挂 → `file-loaded` 后 `sub-color` 回 nil、`override` 回 scale、报告「保持原样」
+→ 再切彩色 → 重新套用；T38b 反向证明用户手动 `color`（`auto=false`）跨 `file-loaded` 仍保留。
+
+**中日双语布局（2026-10-23，T39-T44）**：内封 lang（chi/jpn）与外挂文件名（`.chi.`/`.jpn.`）
+两路识别；主=中次=日 / 主=日次=中 两种朝向（日轨置底 100 + ×0.8，中轨 75 + 不变）；
+非「一中一日」(jpn+eng) 与 `dual_layout=no` 不布局；用户手动 `pos` 关闭布局且跨
+`playback-restart` 保持；布局不写状态文件、不跨文件泄漏。
+
 变异验证（2026-10-22，证明上述新用例有牙）：
 双语跳过恒不生效 → 3 用例红；`pos_min_gap` 硬编码 25 → T36 红；
 `report_ms` 硬编码 6000 → T37 红；
 彩色判定回退成「只看主色 + 像素 accent 恒 false」→ T27b 4 条 + T31b 2 条 + 黄字像素用例共 7 红。
+
+变异验证（2026-10-23）：`clear_auto_style` 恒不清 → T38 泄漏 2 条红（`sub-color` 变 #FFFFFF、
+`override` 变 force，正是报障现象）；`compute_layout` 恒返回 nil → T39/T40/T44 应用类 11 条红
+（未应用/禁用/手动保持类依旧绿，精准命中）。
 
 ### 11.2 真机 E2E（`tools/sub-style-e2e.py`，三阶段）
 
@@ -471,6 +518,8 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
 | 首次字体枚举冷扫 ~~/fonts（719MB）可超过 1.5s | 探针对首次 `open-fonts` 的检查等待放到 3.5s |
 | Pillow 只在系统 Python（`C:\Python314`）可用 | E2E 视觉判据须用系统 Python 跑；缺 PIL 时明确退出 |
 | **mpv conf 不支持行尾注释**（`key=value  # 注释` 整段被当值） | conf 注释一律独立行；`sub-style-conf-verify.py` 门禁防回归（布尔报错回落默认值、字符串静默吃注释，都会被默认值/包含匹配巧合掩盖） |
+| **外挂字幕轨 `track-list[].lang` 恒为 `nil`**（2026-10-23 实测：`plain.ass`/`show.jpn.ass`/`show.chi.ass` 全是 nil，仅 `title`=文件名） | 语言识别不能只靠 lang；外挂要走文件名/标题语言标记；内封轨才有 lang |
+| **`\pos` 注释幕对 `sub-scale` 也豁免**（2026-10-23 实测：scale 1→0.4 时无 `\pos` 对白行高度 30→11，`\pos` 注释行恒定 30） | 双轨布局用 scale 缩小日文对白，不会波及 `\pos` 注释幕的样式/大小——正合「注释幕不变」需求 |
 
 ---
 

@@ -96,6 +96,8 @@ local o = {
     outlines = '无=0,细=0.5,标准=1,粗=2,特粗=3', -- 描边粗细候选（sub-outline-size）
     outline_colors = '黑=#000000,白=#FFFFFF,红=#FF0000,黄=#FFFF00,绿=#00FF00,青=#00FFFF,蓝=#0000FF,灰=#808080', -- 描边颜色候选（#RRGGBB）
     rebuild_delay = 0.12,     -- override 切换的延迟设置（秒；同 tick 设属性+重建会读旧值）
+    dual_layout = true,       -- 中日双语(双轨)自动布局：按语言识别，日文轨置底+缩小、中文轨其上
+    dual_layout_scale = 0.8,  -- 双语布局中日文轨的缩放倍率（视觉上小于中文轨）
 }
 options.read_options(o, 'uosc_subtitle_style')
 
@@ -219,7 +221,8 @@ local function new_track(pos_default)
             scale = clamp(o.scale_default, SCALE_MIN, SCALE_MAX),
             font = nil, size = nil, bold = nil,
             color = nil, outline = nil, outline_color = nil,
-            pos_owned = false}
+            pos_owned = false,
+            auto = false}  -- auto：当前样式是否由「彩色检测自动套用预设」写入（非用户手动）
 end
 
 local state = {
@@ -354,6 +357,9 @@ end
 local save_state
 local expected_value = {}     -- prop -> 本脚本最后写入的值
 local in_reset_window = false -- end-file 期间 mpv 会按 reset-on-next-file 重置，勿采纳
+-- CN+JP 双语自动布局（per-file 覆盖层）：非 nil 时 apply_all 用布局值写两轨位置/缩放，
+-- 用户手动设位置/缩放或外部改动即置 nil 关闭。不写状态文件、不跨文件泄漏。
+local layout = nil
 
 local function write_prop(prop, value)
     expected_value[prop] = value
@@ -367,6 +373,7 @@ local function adopt_external(prop, track_key, field)
         if exp ~= nil and math.abs(v - exp) < 0.001 then return end
         if math.abs(v - state[track_key][field]) < 0.001 then return end
         state[track_key][field] = v
+        layout = nil   -- 用户从外部(r/t 键/其它脚本)改了位置/缩放 ⇒ 关闭本次文件的自动布局
         save_state()
     end
 end
@@ -439,6 +446,8 @@ local function read_track_fields(data, track)
     if type(data.outline_color) == 'string' and data.outline_color ~= '' then
         track.outline_color = data.outline_color
     end
+    -- auto：样式是否由彩色检测自动套用（决定切文件时是否清除，见 clear_auto_style）
+    if type(data.auto) == 'boolean' then track.auto = data.auto end
 end
 
 local function load_state()
@@ -498,6 +507,7 @@ save_state = function()
         if t.color ~= nil then d.color = t.color end
         if t.outline ~= nil then d.outline = t.outline end
         if t.outline_color ~= nil then d.outline_color = t.outline_color end
+        if t.auto then d.auto = true end
     end
     local f = io.open(path, 'wb')
     if not f then
@@ -636,6 +646,74 @@ local function schedule_override(prop, final_value)
     end)
 end
 
+--------------------------------------------------------------------
+-- CN+JP 双语自动布局（per-file 覆盖层，不落状态、不跨文件泄漏）
+-- 语言识别双路：内封轨读 track-list.lang；外挂轨 mpv 不给 lang(恒 nil)，
+-- 改从文件名/标题的语言标记猜(.jpn./.chi./.sc./(JP)/(CHS)…)。
+-- 识别为一中一日时：日文轨置底(100)+缩放 dual_layout_scale，中文轨在其上
+-- (100-pos_min_gap)，两轨用避让间距分开。带 \pos 的注释幕(signs)对位置与
+-- 缩放都豁免（真机实测），样式/位置不受影响。
+--------------------------------------------------------------------
+local function sub_track_by_id(track_id)
+    local tl = mp.get_property_native('track-list') or {}
+    for _, t in ipairs(tl) do
+        if t.type == 'sub' and t.id == track_id then return t end
+    end
+    return nil
+end
+
+-- 语言码 → 'cn' | 'jp' | nil（兼容 639-1/2/3 与字幕组常见简写；去空格/下划线/连字符）
+local function lang_code_class(code)
+    code = tostring(code or ''):lower():gsub('[%s_%-]', '')
+    if code == '' then return nil end
+    if code == 'chi' or code == 'zho' or code == 'zh' or code == 'cmn'
+        or code == 'chs' or code == 'sc' or code == 'gb' or code == 'cn'
+        or code == 'zhcn' or code == 'zhhans' then
+        return 'cn'
+    end
+    if code == 'jpn' or code == 'ja' or code == 'jp' then return 'jp' end
+    return nil
+end
+
+-- 判定一条字幕轨的语言：先 track-list.lang，再文件名/标题的语言标记（点分段 + 括号段）
+local function track_lang_class(t)
+    if not t then return nil end
+    local c = lang_code_class(t.lang)
+    if c then return c end
+    local name = tostring(t['external-filename'] or t.title or '')
+    for seg in name:gmatch('[^%./]+') do
+        c = lang_code_class(seg)
+        if c then return c end
+    end
+    for seg in name:gmatch('%(([^%)]+)%)') do
+        c = lang_code_class(seg)
+        if c then return c end
+    end
+    return nil
+end
+
+-- 返回布局覆盖层 {main={pos,scale}, sec={pos,scale}}；非「一中一日」双语返回 nil
+local function compute_layout()
+    if not o.dual_layout then return nil end
+    if not has_secondary_track() then return nil end
+    local sid = mp.get_property_number('sid', -1)
+    local ssid = mp.get_property_number('secondary-sid', -1)
+    if sid < 0 or ssid < 0 then return nil end
+    local mc = track_lang_class(sub_track_by_id(sid))
+    local sc = track_lang_class(sub_track_by_id(ssid))
+    local jp_key
+    if mc == 'cn' and sc == 'jp' then jp_key = 'sec'
+    elseif mc == 'jp' and sc == 'cn' then jp_key = 'main'
+    else return nil end
+    local cn_key = (jp_key == 'sec') and 'main' or 'sec'
+    local jp_pos = PUSH_MAX                                          -- 日文轨置底
+    local cn_pos = clamp(jp_pos - o.pos_min_gap, POS_MIN, PUSH_MAX)  -- 中文轨其上，保持避让间距
+    local lay = {}
+    lay[jp_key] = {pos = jp_pos, scale = clamp(o.dual_layout_scale, SCALE_MIN, SCALE_MAX)}
+    lay[cn_key] = {pos = cn_pos, scale = nil}   -- nil = 不动中文轨缩放
+    return lay
+end
+
 -- 全量应用。
 --   dance=true, rebuild=true：字体/字号变化——需要推动目标轨解码器重建
 --     （sub-font-size 无 UPDATE flag），并只触碰**真正需要变化**的轨道。
@@ -648,11 +726,22 @@ local function apply_all(dance, rebuild)
     -- 位置：**只回写本脚本拥有（用户通过菜单设过）的轨**。
     -- 未拥有的保持 mpv 当前值（配置/默认），脚本不越权覆盖。
     -- 缩放同理（两轨独立、即时生效）。
-    if state.main.pos_owned then write_prop('sub-pos', state.main.pos) end
-    write_prop('sub-scale', state.main.scale)
+    -- CN+JP 双语布局激活(layout)时，用布局值覆盖两轨（日轨置底+缩小，中轨其上）；
+    -- 用户手动设位置/缩放即 layout=nil，回到下面的「拥有才回写」。
+    local function apply_track_layout(key, pos_prop_, scale_prop_)
+        local st = state[key]
+        local l = layout and layout[key]
+        if l then
+            write_prop(pos_prop_, l.pos)
+            write_prop(scale_prop_, l.scale ~= nil and l.scale or st.scale)
+        else
+            if st.pos_owned then write_prop(pos_prop_, st.pos) end
+            write_prop(scale_prop_, st.scale)
+        end
+    end
+    apply_track_layout('main', 'sub-pos', 'sub-scale')
     if has_secondary_track() then
-        if state.sec.pos_owned then write_prop('secondary-sub-pos', state.sec.pos) end
-        write_prop('secondary-sub-scale', state.sec.scale)
+        apply_track_layout('sec', 'secondary-sub-pos', 'secondary-sub-scale')
     end
 
     -- 共享样式通道 = 目标轨的样式
@@ -734,6 +823,7 @@ local function position_warning()
 end
 
 local function set_pos(v, quiet)
+    layout = nil   -- 用户手动设位置 ⇒ 关闭本次文件的 CN+JP 自动布局
     cur().pos = clamp(v, POS_MIN, POS_MAX)
     cur().pos_owned = true                       -- 用户显式设定 ⇒ 取得归属权
     local pushed = push_other_away(cur().pos)    -- 另一轨自动让位，避免重叠
@@ -751,6 +841,7 @@ local function set_pos(v, quiet)
 end
 
 local function set_scale(v, quiet)
+    layout = nil   -- 用户手动设缩放 ⇒ 关闭本次文件的 CN+JP 自动布局
     cur().scale = clamp(v, SCALE_MIN, SCALE_MAX)
     apply_all(false)
     save_state()
@@ -766,6 +857,7 @@ end
 
 local function set_font(v, quiet)
     cur().font = v
+    cur().auto = false
     apply_all(true, true)
     save_state()
     if not quiet then
@@ -779,6 +871,7 @@ end
 
 local function set_size(v, quiet)
     cur().size = v
+    cur().auto = false
     apply_all(true, true)
     save_state()
     if not quiet then
@@ -798,6 +891,7 @@ end
 
 local function set_bold(v, quiet)
     cur().bold = v
+    cur().auto = false
     apply_all(true)
     save_state()
     if not quiet then
@@ -811,6 +905,7 @@ end
 
 local function set_color(c, quiet)
     cur().color = c
+    cur().auto = false
     apply_all(true, true)
     save_state()
     if not quiet then
@@ -827,6 +922,7 @@ end
 
 local function set_outline(v, quiet)
     cur().outline = v
+    cur().auto = false
     apply_all(true, true)
     save_state()
     if not quiet then
@@ -844,6 +940,7 @@ end
 
 local function set_outline_color(c, quiet)
     cur().outline_color = c
+    cur().auto = false
     apply_all(true, true)
     save_state()
     if not quiet then
@@ -884,6 +981,7 @@ local function set_style_preset(name, quiet)
         end
         cur().size = #SIZE_PRESETS > 0 and max_size or nil
         cur().bold = true
+        cur().auto = false
         apply_all(true, true)
         save_state()
         if not quiet then
@@ -893,6 +991,7 @@ local function set_style_preset(name, quiet)
     elseif name == 'original' then
         local t = cur()
         t.font, t.size, t.bold = nil, nil, nil
+        t.auto = false
         apply_all(true, true)
         save_state()
         if not quiet then flash('样式预设：' .. track_name() .. '全部恢复字幕原样') end
@@ -900,6 +999,8 @@ local function set_style_preset(name, quiet)
         -- 把目标轨的样式复制给另一轨（两轨一致 ⇒ 一起生效）
         local t = cur()
         other().font, other().size, other().bold = t.font, t.size, t.bold
+        t.auto = false
+        other().auto = false
         apply_all(true, true)
         save_state()
         if not quiet then flash('样式已同步到' .. (is_sec() and '主字幕' or '次字幕')) end
@@ -1470,7 +1571,9 @@ local function flash_tl(text, ms)
     end
 end
 
-local function apply_preset(quiet)
+-- is_auto=true：由「彩色检测」自动套用（标记 auto；切到非彩色文件时会被清除）；
+-- is_auto=false/nil：用户手动 preset-apply（视为用户选择，跨文件持久，不清除）。
+local function apply_preset(quiet, is_auto)
     local t = cur()
     t.color = preset.color
     t.outline_color = preset.outline_color
@@ -1478,12 +1581,22 @@ local function apply_preset(quiet)
     if preset.font then t.font = preset.font end
     if preset.size then t.size = preset.size end
     if preset.bold ~= nil then t.bold = preset.bold end
+    t.auto = is_auto == true
     apply_all(true, true)
     save_state()
     if not quiet then
         flash(track_name() .. ' 已套用预设样式')
     end
     return true
+end
+
+-- 清除某轨由「自动预设」写入的样式（auto=true）：自动预设只对彩色字幕生效，
+-- 不跨文件泄漏到非彩色字幕。用户手动设过样式的轨（auto=false）不受影响、依旧持久。
+local function clear_auto_style(t)
+    if not t.auto then return end
+    t.font, t.size, t.bold = nil, nil, nil
+    t.color, t.outline, t.outline_color = nil, nil, nil
+    t.auto = false
 end
 
 local function preset_report(info, applied, skipped_dual)
@@ -1518,7 +1631,7 @@ local function run_inspect()
     if has_secondary_track() and preset.skip_dual then
         skipped_dual = true
     elseif preset.enabled and (not preset.only_colored or info.colored) then
-        applied = apply_preset(true)
+        applied = apply_preset(true, true)
     end
     flash_tl(preset_report(info, applied, skipped_dual), o.report_ms or 6000)
 end
@@ -1925,7 +2038,7 @@ mp.register_script_message('color', function(...)
     local v = table.concat({...}, ' '):gsub('^%s+', ''):gsub('%s+$', '')
     if v == '' or v == 'reset' then set_color(nil) else set_color(v) end
 end)
-mp.register_script_message('preset-apply', function() apply_preset(false) end)
+mp.register_script_message('preset-apply', function() apply_preset(false, false) end)
 mp.register_script_message('preset-save', function()
     local t = cur()
     preset.color = t.color or preset.color
@@ -1999,6 +2112,12 @@ mp.register_event('end-file', function() in_reset_window = true end)
 apply_all(false)
 
 mp.register_event('file-loaded', function()
+    -- 自动预设只对彩色字幕生效，不跨文件泄漏：先清除上个文件由「彩色检测」写入的
+    -- 样式（auto=true），使新文件从「字幕原样」起；随后 run_inspect 若判定彩色再套用。
+    -- 附带好处：清除后内封字幕的像素检测能看到原配色，不被上一处 force+白字干扰而漏检。
+    clear_auto_style(state.main)
+    clear_auto_style(state.sec)
+    layout = compute_layout()   -- CN+JP 双语自动布局（per-file；非中日双语为 nil）
     apply_all(false)
     -- 稍等字幕显示出来再做样式检测（像素采样需要画面里有字幕）
     mp.add_timeout(o.inspect_delay or 1.2, function() run_inspect() end)
