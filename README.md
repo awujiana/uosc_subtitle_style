@@ -3,7 +3,7 @@
 [![协议](https://img.shields.io/badge/协议-AGPL--3.0-blue)](LICENSE)
 [![语言](https://img.shields.io/badge/语言-简体中文-blueviolet)](https://zh.wikipedia.org/wiki/中文)
 [![平台](https://img.shields.io/badge/平台-mpv%20%3E%3D%200.41-orange)](https://mpv.io)
-[![版本](https://img.shields.io/badge/版本-v1.0.0-green)](https://github.com/awujiana/uosc_subtitle_style/releases)
+[![版本](https://img.shields.io/badge/版本-v1.0.1-green)](https://github.com/awujiana/uosc_subtitle_style/releases)
 [![作者](https://img.shields.io/badge/作者-awujiana-orange)](https://github.com/awujiana)
 
 # uosc_subtitle_style
@@ -92,7 +92,7 @@ portable_config/                  ← mpv 配置目录（便携版在 mpv.exe �
 **方式二：Releases 下载**
 
 到 [Releases](https://github.com/awujiana/uosc_subtitle_style/releases) 页面下载
-`uosc_subtitle_style-1.0.0.zip`，解压后按上面的目录树放到对应位置即可。
+`uosc_subtitle_style-1.0.1.zip`，解压后按上面的目录树放到对应位置即可。
 
 ### 绑定按键（可选）
 
