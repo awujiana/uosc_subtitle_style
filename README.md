@@ -254,7 +254,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 <a id="sec-6"></a>
 ## ⚙️ 配置项
 
-全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，27 项与脚本默认值一一对应）。
+全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，29 项与脚本默认值一一对应）。
 不放此文件 = 全部使用默认值。常用几项：
 
 | 配置 | 默认 | 说明 |
@@ -274,6 +274,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `preset_font` / `preset_size` / `preset_bold` | 空 / `0` / `keep` | 预设字体/字号/粗体（空或 `keep` = 不动） |
 | `colored_threshold` | `40` | 判定「彩色字幕」的最小饱和度（max-min(RGB)，主色与描边色分别判定，任一达标即算） |
 | `inspect_delay` / `report_ms` | `1.2` / `6000` | 载入后检测等待（秒）/ 报告显示时长（毫秒） |
+| `inspect_retries` / `inspect_retry_delay` | `15` / `1.0` | 检测重试次数 / 间隔：字幕未及时加载或片头无对白时，等第一句对白出现再检 |
 | `rebuild_delay` | `0.12` | override 切换的延迟设置（秒） |
 | `fallback_cycle` | `yes` | 无 uosc 时降级为循环切换 |
 

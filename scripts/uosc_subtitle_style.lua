@@ -84,6 +84,8 @@ local o = {
     colored_threshold = 40,   -- 判定「彩色字幕」的最小饱和度（max-min(RGB)）
     inspect_delay = 1.2,      -- 载入后等待多久做样式检测（秒）
     report_ms = 6000,         -- 左上角检测报告的显示时长（毫秒）
+    inspect_retries = 15,     -- 检测重试次数：字幕未及时加载/片头无对白时，等第一句对白出现再检
+    inspect_retry_delay = 1.0, -- 检测重试间隔（秒）
     preset_enabled = true,    -- 载入时默认套用预设样式
     preset_only_colored = true, -- 仅当字幕本身是彩色时才套用
     preset_skip_dual = true,  -- 双语字幕（同时存在次字幕轨）时默认不套用、不改颜色
@@ -360,6 +362,16 @@ local in_reset_window = false -- end-file 期间 mpv 会按 reset-on-next-file �
 -- CN+JP 双语自动布局（per-file 覆盖层）：非 nil 时 apply_all 用布局值写两轨位置/缩放，
 -- 用户手动设位置/缩放或外部改动即置 nil 关闭。不写状态文件、不跨文件泄漏。
 local layout = nil
+
+-- 样式检测状态与前向声明（reset_style / file-loaded / sub-text 观察器都要用）：
+-- run_inspect 定义在后面的「预设样式与样式检测」区，此处必须前向声明，
+-- 否则前置闭包里的 run_inspect 会解析成全局 nil（Lua 局部量作用域从声明之后才开始）。
+local inspect_gen = 0           -- 文件代号：自增；切文件后作废上个文件遗留的检测链/观察回调
+local inspect_done = false      -- 本文件是否已完成一次检测（成功即不再因对白变化重检）
+local inspect_attempts = 0      -- 本文件已重试次数
+local inspect_scheduled = false -- 是否已有待执行的重试计时器（防重复排程）
+local inspect_armed = false     -- 首检(inspect_delay)是否已跑过；跑过才允许 sub-text 观察器触发
+local run_inspect
 
 local function write_prop(prop, value)
     expected_value[prop] = value
@@ -1016,6 +1028,10 @@ local function reset_style()
     state.target = 'main'
     apply_all(true, true)
     save_state()
+    -- 恢复默认后重新检测一次（字幕可能在首次检测之后才加载出来 / 才出对白）
+    inspect_done = false
+    inspect_attempts = 0
+    mp.add_timeout(o.inspect_delay or 1.2, function() run_inspect() end)
     flash('已恢复默认（主/次位置已避让 · 缩放 ×1.00 · 样式全原样）')
 end
 
@@ -1624,9 +1640,29 @@ end
 -- 载入后：检测 → 左上角报告 → 按需套用预设
 -- 双语（同时存在次字幕轨）默认不套用：两条轨往往已经各有配色，强行统一反而破坏双语可读性
 -- （菜单「双语时套用预设」或 conf 的 preset_skip_dual=no 可改回；手动 preset-apply 始终可用）。
-local function run_inspect()
+-- gen：文件代号（缺省取当前）；非当前文件说明已切文件，放弃本次旧链。
+-- inspect_done：本文件已检测过即不再因对白变化重检（避免每句对白都重跑/重复套用）。
+run_inspect = function(gen, allow_retry)
+    gen = gen or inspect_gen
+    if gen ~= inspect_gen or inspect_done then return end
     local info = inspect_style()
-    if not info then return end
+    if not info then
+        -- 字幕尚未加载 / 片头尚无对白：排一次重试（防重复排程），等第一句对白出现
+        -- （sub-text 观察器也会即时触发）再检，最多 inspect_retries 次。
+        -- allow_retry=false（手动 inspect）不进重试循环——手动重检若因已处 force 采不到，重试也无益。
+        if allow_retry ~= false and inspect_attempts < (o.inspect_retries or 15)
+            and not inspect_scheduled then
+            inspect_attempts = inspect_attempts + 1
+            inspect_scheduled = true
+            mp.add_timeout(o.inspect_retry_delay or 1.0, function()
+                inspect_scheduled = false
+                run_inspect(gen, true)
+            end)
+        end
+        return
+    end
+    inspect_done = true
+    inspect_attempts = 0
     local applied, skipped_dual = false, false
     if has_secondary_track() and preset.skip_dual then
         skipped_dual = true
@@ -2071,7 +2107,11 @@ mp.register_script_message('preset-reset', function()
     save_preset()
     flash('预设已恢复出厂值')
 end)
-mp.register_script_message('inspect', function() run_inspect() end)
+mp.register_script_message('inspect', function()
+    inspect_done = false      -- 手动重检：无视「本文件已检测过」守卫
+    inspect_attempts = 0
+    run_inspect(nil, false)   -- 手动重检不进入重试循环
+end)
 mp.register_script_message('style-preset', set_style_preset)
 mp.register_script_message('open-fonts', function()
     flash('正在扫描本机字体…')
@@ -2103,6 +2143,17 @@ mp.observe_property('secondary-sub-pos', 'number',
 mp.observe_property('secondary-sub-scale', 'number',
     adopt_external('secondary-sub-scale', 'sec', 'scale'))
 
+-- 第一句对白渲染出来即触发检测：内封字幕片头常无对白，inspect_delay 后的首检会采空；
+-- 用户需求「按第一句底部对话字幕开始识别」——sub-text 由空转非空即是第一句对白出现。
+-- inspect_armed：首检(inspect_delay)跑过才触发，避免对白刚渲染就提前检测、抢在 inspect_delay
+-- 之前（守住「先看到原字幕、再转黑白」的时序）。inspect_done：检测成功后不再随每句对白重跑。
+mp.observe_property('sub-text', 'string', function(_, val)
+    if inspect_done or not inspect_armed then return end
+    if type(val) == 'string' and val ~= '' then
+        run_inspect()
+    end
+end)
+
 -- end-file 期间 mpv 会按 reset-on-next-file 重置 sub-pos/sub-scale，
 -- 那不是用户意图 ⇒ 打开窗口期禁止采纳，file-loaded 应用完再关闭
 mp.register_event('end-file', function() in_reset_window = true end)
@@ -2119,8 +2170,18 @@ mp.register_event('file-loaded', function()
     clear_auto_style(state.sec)
     layout = compute_layout()   -- CN+JP 双语自动布局（per-file；非中日双语为 nil）
     apply_all(false)
-    -- 稍等字幕显示出来再做样式检测（像素采样需要画面里有字幕）
-    mp.add_timeout(o.inspect_delay or 1.2, function() run_inspect() end)
+    -- 每个文件重新检测：gen++ 作废上个文件遗留的检测链；首检在 inspect_delay 后，
+    -- 字幕未就绪（未加载/片头无对白）则由 sub-text 观察器（第一句对白出现即触发）
+    -- 与有界重试兜底，直到检出或超过 inspect_retries 次。
+    inspect_gen = inspect_gen + 1
+    inspect_done = false
+    inspect_attempts = 0
+    inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
+    local gen = inspect_gen
+    mp.add_timeout(o.inspect_delay or 1.2, function()
+        inspect_armed = true
+        run_inspect(gen)
+    end)
 end)
 -- playback-restart 覆盖 seek/reload 等造成的重载
 mp.register_event('playback-restart', function() apply_all(false) end)

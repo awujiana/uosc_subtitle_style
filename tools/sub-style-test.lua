@@ -1532,6 +1532,107 @@ check('dual-layout-ext-jp-scale', math.abs((env.props['secondary-sub-scale'] or 
     tostring(env.props['secondary-sub-scale']))
 restore35()
 
+--------------------------------------------------------------------
+-- T45 字幕延迟加载：首检无对白→不套用；第一句对白(sub-text 非空)出现即触发检测并套用；
+--     检测完成后后续对白变化不再重跑（inspect_done 守卫）。
+--     回归：曾因检测只在 file-loaded+inspect_delay 跑一次，字幕没在开头加载出来就永久
+--     识别失败（点恢复默认再重开也一样，因为还是那一个时机）。
+--------------------------------------------------------------------
+local function synth_frame45(rows)
+    local data = {}
+    for y = 1, 4 do
+        for x = 1, 4 do
+            local p = rows[y][x]
+            data[#data + 1] = string.char(p[1], p[2], p[3], 255)
+        end
+    end
+    return {w = 4, h = 4, stride = 16, data = table.concat(data)}
+end
+local Y45 = {0x00, 0xFF, 0xFF}   -- #FFFF00 黄（彩色）
+local G45 = {0x80, 0x80, 0x80}
+local B45 = {0x00, 0x00, 0x00}
+local function yellow_shots45()
+    env.raw_shots = {
+        subtitles = synth_frame45({{Y45, G45, Y45, G45},
+                                   {G45, G45, G45, G45},
+                                   {B45, G45, Y45, G45},
+                                   {G45, G45, G45, G45}}),
+        video = synth_frame45({{G45, G45, G45, G45},
+                               {G45, G45, G45, G45},
+                               {G45, G45, G45, G45},
+                               {G45, G45, G45, G45}}),
+    }
+end
+
+local restore36 = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['track-list'] = {{type = 'sub', id = 1}}   -- 内封：靠像素采样
+env.props['sub-text'] = ''                            -- 片头无对白
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+flush_timers()   -- 首检：无对白 → inspect_style nil → 排重试，不套用
+check('inspect-delay-no-apply', env.props['sub-color'] == nil, tostring(env.props['sub-color']))
+yellow_shots45()
+fire_prop('sub-text', '第一句对白')   -- 观察器触发 → 检出黄色(彩) → 套用
+check('inspect-on-first-dialogue', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+-- 检测已完成：后续对白变化不再重跑（否则会重复套用/覆盖用户改动）
+env.props['sub-color'] = '#123456'
+fire_prop('sub-text', '第二句对白')
+check('inspect-done-no-retrigger', env.props['sub-color'] == '#123456', tostring(env.props['sub-color']))
+restore36()
+
+-- T45b 重试兜底：观察器未触发时，定时重试在字幕就绪后同样能检出
+local restore37 = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['track-list'] = {{type = 'sub', id = 1}}
+env.props['sub-text'] = ''
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+flush_timers()   -- 首检失败 → 排一次重试
+check('inspect-retry-no-apply-yet', env.props['sub-color'] == nil, tostring(env.props['sub-color']))
+yellow_shots45()
+env.props['sub-text'] = '对白'   -- 字幕这次直接通过属性就绪（不触发观察器）
+flush_timers()                   -- 冲重试计时器 → 检出 → 套用
+check('inspect-retry-applies', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+restore37()
+
+-- T45c 手动 inspect 强制重检：无视 inspect_done 守卫（外部字幕文件解析，不受 force 影响）
+local restore38 = fresh_script_env()
+set_tracks(false)
+env.vfs['C:/fake-config/rec.ass'] = make_ass('&H0000FFFF', '&H00FF0000')
+set_external_track('C:/fake-config/rec.ass')
+env.props['sub-text'] = '对白'
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+flush_timers()   -- 首检即检出（外挂文件可解析）→ 套用
+check('inspect-rec-first-applies', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+env.props['sub-color'] = '#123456'   -- 模拟外部改动
+env.messages['inspect']()            -- 手动重检：重置 done → 文件仍判彩色 → 再套用
+check('inspect-rec-manual-redetect', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+restore38()
+
+-- T45d 观察器门(inspect_armed)：首检(inspect_delay)跑过前，对白出现也不提前检测
+--       （守住「先看到原字幕、再转黑白」时序，回归：观察器曾抢在 inspect_delay 前触发）
+local restore39 = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['track-list'] = {{type = 'sub', id = 1}}
+env.props['sub-text'] = ''
+env.props['sub-ass-override'] = 'scale'
+load_script()
+env.events['file-loaded']()
+yellow_shots45()
+fire_prop('sub-text', '对白')   -- 首检尚未跑(armed=false) → 观察器不触发，不提前套用
+check('inspect-observer-gated-before-armed', env.props['sub-color'] == nil, tostring(env.props['sub-color']))
+flush_timers()                   -- 首检跑(armed=true)，此时对白已在 → 首检即检出并套用
+check('inspect-after-armed-detects', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
+restore39()
+
 restore13(); restore14()
 
 restore(); restore2(); restore3(); restore4(); restore5(); restore6(); restore7()

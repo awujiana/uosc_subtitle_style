@@ -390,11 +390,21 @@ outline_color/outline/font/size/bold）。启动时 `load_preset()` 读取并逐
 显示后用定时器还原（记录原值，缺省 center/bottom）——否则用户后续所有 OSD 都会跑左上角。
 E2E 有还原断言。
 
+**字幕未及时加载 → 检测重试（2026-10-23，`inspect_retries` / sub-text 观察器）**：
+检测原先只在 `file-loaded + inspect_delay` 跑一次，字幕没在开头加载出来（外挂关联慢 /
+内封片头无对白）就 `inspect_style` 返回 nil、永久识别失败（点恢复默认再重开也一样）。
+修法：① `run_inspect` 在 `inspect_style` 返回 nil 时按 `inspect_retry_delay` 排重试，
+最多 `inspect_retries` 次；② 观察 `sub-text`，**第一句对白由空转非空即触发检测**（用户需求
+「按第一句底部对话字幕开始识别」）；③ `inspect_armed` 门：首检(inspect_delay)跑过前观察器
+不触发，守住「先看到原字幕、再转黑白」时序；④ `inspect_gen` 文件代号防切文件后旧链串扰；
+⑤ `inspect_done` 守卫：检测成功后不随每句对白重跑。`reset` 后也会重跑一次检测。
+`inspect` 手动消息强制重检（`allow_retry=false`，不在 force 采空时进重试循环）。
+
 ---
 
 ## 11. 测试体系
 
-### 11.1 单元测试（`tools/sub-style-test.lua`,191 项）
+### 11.1 单元测试（`tools/sub-style-test.lua`,200 项）
 
 自建 stub：`mp`（全局注入，非 `package.loaded`）、`mp.msg/utils/options`、
 可 `seek` 的虚拟文件系统、计时器队列（`flush_timers()` 验证延迟设置）、
@@ -520,6 +530,8 @@ yes|no|true|false / R3 数值项必须能 parse / R4 字符串项值含 `#` 即�
 | **mpv conf 不支持行尾注释**（`key=value  # 注释` 整段被当值） | conf 注释一律独立行；`sub-style-conf-verify.py` 门禁防回归（布尔报错回落默认值、字符串静默吃注释，都会被默认值/包含匹配巧合掩盖） |
 | **外挂字幕轨 `track-list[].lang` 恒为 `nil`**（2026-10-23 实测：`plain.ass`/`show.jpn.ass`/`show.chi.ass` 全是 nil，仅 `title`=文件名） | 语言识别不能只靠 lang；外挂要走文件名/标题语言标记；内封轨才有 lang |
 | **`\pos` 注释幕对 `sub-scale` 也豁免**（2026-10-23 实测：scale 1→0.4 时无 `\pos` 对白行高度 30→11，`\pos` 注释行恒定 30） | 双轨布局用 scale 缩小日文对白，不会波及 `\pos` 注释幕的样式/大小——正合「注释幕不变」需求 |
+| **`sub-text` 观察器可在第一句对白出现时触发检测**（2026-10-23 实测：对白延迟到 3s 才出现，首检 1.2s 采空，3s 对白渲染即检出并转黑白） | 字幕未及时加载/片头无对白的识别失败靠「重试 + sub-text 观察器」修复；`inspect_armed` 门保证不早于 inspect_delay |
+| **次轨白字在底部测量带的出现是 `configure_ass` 渲染时序所致**（2026-10-23：干净复刻次轨在顶部、黄字满值 1840；E2E 高负载下次轨落入底部带覆盖部分主轨黄字至 796，但主轨 `override=scale` 未转白） | 双轨用例 E 的视觉断言只判「主轨黄字仍在」（被误转白会跌到近 0），不用 `white<yellow*0.25`（会被次轨污染）——脚本从不写 `secondary-sub-pos`，非代码回归 |
 
 ---
 

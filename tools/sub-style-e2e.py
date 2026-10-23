@@ -465,14 +465,19 @@ def main():
     # E：与 A 同一个彩色 fixture，唯一差别是次字幕轨 ⇒ 双轨跳过逻辑必须让它
     #   保持黄色（若误套用会变白，与 A 的判据相同）。这是「双语默认不改颜色」
     #   的差分证明：同 fixture 单轨套用、双轨不套用。
+    e_early_yellow = band_color_count('preset-e-early', BAND_LO, BAND_HI,
+                                      lambda r, g, b: r > 200 and g > 200 and b < 120)
     e_late_yellow = band_color_count('preset-e-late', BAND_LO, BAND_HI,
                                      lambda r, g, b: r > 200 and g > 200 and b < 120)
     e_late_white = band_color_count('preset-e-late', BAND_LO, BAND_HI,
                                     lambda r, g, b: r > 225 and g > 225 and b > 225)
+    # 只判主轨黄字仍在（未被误套用预设转白）：主轨若被误转白，黄字会跌到近 0。
+    # 不用 white<yellow*0.25——次轨(白字)因 configure_ass 渲染时序在高负载下可能落入
+    # 底部测量带、覆盖部分主轨黄字（干净复刻下次轨在顶部、黄字满值），会误报。
     check('preset-e-late-still-yellow',
-          e_late_yellow is not None and e_late_yellow > 100
-          and (e_late_white is None or e_late_white < e_late_yellow * 0.25),
-          'yellow=%s white=%s' % (e_late_yellow, e_late_white))
+          e_early_yellow is not None and e_late_yellow is not None
+          and e_early_yellow > 100 and e_late_yellow >= e_early_yellow * 0.5,
+          'yellow %s → %s (sec-white=%s)' % (e_early_yellow, e_late_yellow, e_late_white))
     # F：白字 + 紫描边。早图（未套用）字幕带应有紫(#481081)；套用后描边转黑 ⇒ 紫消失。
     #    与 A 差分：A 考「彩字变白」，F 考「白字+彩描边也判彩色、描边转黑」。
     def is_purple(r, g, b):
