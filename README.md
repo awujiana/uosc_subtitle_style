@@ -319,7 +319,7 @@ uosc 是可选依赖：探测到（`UOSC_MAIN` 环境变量，或 mpv 旁 `porta
 
 - [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论。
 - [贡献指南](CONTRIBUTING.md) —— 门禁清单与代码 / 文档约定。
-- [Release Notes](Release-Notes.md) —— 各版本发布说明。
+- [Release Notes](https://github.com/awujiana/uosc_subtitle_style/releases) —— 各版本发布说明（见 Releases 页面）。
 
 <a id="sec-10"></a>
 ## 💬 反馈建议
