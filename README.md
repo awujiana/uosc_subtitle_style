@@ -3,49 +3,45 @@
 [![协议](https://img.shields.io/badge/协议-AGPL--3.0-blue)](LICENSE)
 [![语言](https://img.shields.io/badge/语言-简体中文-blueviolet)](https://zh.wikipedia.org/wiki/中文)
 [![平台](https://img.shields.io/badge/平台-mpv%20%3E%3D%200.41-orange)](https://mpv.io)
-[![版本](https://img.shields.io/badge/版本-v1.0.1-green)](https://github.com/awujiana/uosc_subtitle_style/releases)
 [![作者](https://img.shields.io/badge/作者-awujiana-orange)](https://github.com/awujiana)
 
-# uosc_subtitle_style
+[![Release](https://img.shields.io/github/v/release/awujiana/uosc_subtitle_style)](https://github.com/awujiana/uosc_subtitle_style/releases)
+[![Stars](https://img.shields.io/github/stars/awujiana/uosc_subtitle_style?style=flat-square)](https://github.com/awujiana/uosc_subtitle_style/stargazers)
+[![Issues](https://img.shields.io/github/issues/awujiana/uosc_subtitle_style)](https://github.com/awujiana/uosc_subtitle_style/issues)
 
-**mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理**
+<h1>uosc_subtitle_style</h1>
+
+<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理</strong>
 
 </div>
 
 ---
 
-## 目录
+> [!WARNING]
+> 本项目的相当一部分代码由 AI 辅助生成，并经过持续的人工作业、联调和重构，但它仍然可能存在遗漏、边界情况处理不足或行为与预期不完全一致的问题。如果你在使用过程中发现 Bug、兼容性问题、异常行为或文档缺失，欢迎积极提交 Issue。最好附上复现步骤、日志、截图和系统版本信息，这会非常有帮助。
 
-- [uosc\_subtitle\_style](#uosc_subtitle_style)
-  - [目录](#目录)
-  - [项目简介](#项目简介)
-  - [核心功能](#核心功能)
-  - [快速开始](#快速开始)
-    - [安装（30 秒）](#安装30-秒)
-    - [绑定按键（可选）](#绑定按键可选)
-    - [运行依赖](#运行依赖)
-  - [使用说明](#使用说明)
-    - [uosc 菜单](#uosc-菜单)
-    - [预览](#预览)
-    - [命令消息（script-message）](#命令消息script-message)
-    - [数据文件](#数据文件)
-  - [在 uosc 控制栏加按钮（uosc.conf）](#在-uosc-控制栏加按钮uoscconf)
-    - [语法](#语法)
-    - [在哪改](#在哪改)
-    - [示例一：加一个「字幕样式」按钮（呼出菜单）](#示例一加一个字幕样式按钮呼出菜单)
-    - [示例二：加多个按钮（菜单 / 字体选择器 / 重新扫描字体）](#示例二加多个按钮菜单--字体选择器--重新扫描字体)
-    - [示例三：状态切换按钮（cycle，进阶）](#示例三状态切换按钮cycle进阶)
-  - [配置项](#配置项)
-  - [兼容性与注意事项](#兼容性与注意事项)
-  - [测试](#测试)
-  - [来源与许可](#来源与许可)
-  - [关联仓库](#关联仓库)
-  - [作者联系方式](#作者联系方式)
-  - [开源协议](#开源协议)
+<a id="sec-toc"></a>
+## 📚 目录
+
+- [🚀 项目简介](#sec-1)
+- [✨ 核心特色](#sec-2)
+- [🖼 展示图](#sec-3)
+- [📦 安装 / 快速开始](#sec-4)
+- [🎮 使用说明](#sec-5)
+- [⚙️ 配置项](#sec-6)
+- [⚠️ 注意事项](#sec-7)
+- [🧪 测试](#sec-8)
+- [📄 文档](#sec-9)
+- [💬 反馈建议](#sec-10)
+- [🙏 参考与致谢](#sec-11)
+- [🔗 关联仓库](#sec-12)
+- [📮 作者联系方式](#sec-13)
+- [📄 开源协议](#sec-14)
 
 ---
 
-## 项目简介
+<a id="sec-1"></a>
+## 🚀 项目简介
 
 **uosc_subtitle_style** 是一个 mpv Lua 脚本，让你在播放途中通过 uosc 菜单一键调整**内封（内嵌）字幕**的样式：位置、缩放、字体、字号、粗体、主色、描边粗细与描边颜色。不需要记命令行属性，不需要重载字幕，点几下菜单即可。
 
@@ -55,7 +51,8 @@
 2. **双语字幕（双轨）没有分轨样式通道**。mpv 的字体系列属性是单份值，主/次解码器共享。本脚本采用「编辑目标」制：菜单顶部切换主字幕/次字幕，样式区只作用于目标轨，另一轨恢复原样（各自的记忆保留，切回即恢复）。位置与缩放则是两轨完全独立的属性，并带**自动避让**（两轨至少相差一档，不重叠）。
 3. **预设改色容易误伤原版字幕**。载入时可自动套用预设样式（白字/标准描边），但仅当字幕本身是彩色的才动；**双语字幕（双轨）默认保持原样不改颜色**——两条都是可配置、可热切换的。
 
-## 核心功能
+<a id="sec-2"></a>
+## ✨ 核心特色
 
 | 功能 | 说明 |
 | --- | --- |
@@ -71,11 +68,26 @@
 | 状态持久化 | 当前样式跨文件、跨重启记忆（`persist=yes`，数据文件在 mpv 配置目录） |
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
 
-## 快速开始
+<a id="sec-3"></a>
+## 🖼 展示图
 
-### 安装（30 秒）
+![uosc 字幕样式菜单](https://img.meituan.net/content/50ff6c2b3c5bbe2b66cc363ac948bc85356475.png)
 
-**方式一：直接拖文件夹（推荐）**
+![位置预设](https://img.meituan.net/content/1e35c10e718a0c79f640fa255e3b1115376117.png)
+
+![字体选择器](https://img.meituan.net/content/736a4a418027744a4cf2f8e23b2f233f429096.png)
+
+![颜色与描边](https://img.meituan.net/content/7856c0c121fb14cee2286b83d5d1772d417958.png)
+
+![中日双语布局：中文在上、日文置底缩小](https://img.meituan.net/content/049ea738320986af80c11bcc7e461259322402.png)
+
+---
+
+<a id="sec-4"></a>
+## 📦 安装 / 快速开始
+
+<details open>
+<summary><strong>方式一：直接拖文件（推荐）</strong></summary>
 
 把本仓库 `scripts/` 文件夹里的 `uosc_subtitle_style.lua`，拖进 mpv 配置目录的 `scripts/` 文件夹：
 
@@ -91,10 +103,14 @@ portable_config/                  ← mpv 配置目录（便携版在 mpv.exe �
 > 拖的是 `scripts/` **里面的那个 `.lua` 文件**，不要把整个 `scripts` 文件夹再套一层
 > （`scripts/scripts/` 这种嵌套 mpv 不会加载）。
 
-**方式二：Releases 下载**
+</details>
 
-到 [Releases](https://github.com/awujiana/uosc_subtitle_style/releases) 页面下载
-`uosc_subtitle_style-1.0.1.zip`，解压后按上面的目录树放到对应位置即可。
+<details>
+<summary><strong>方式二：从 Releases 下载</strong></summary>
+
+前往 [Releases](https://github.com/awujiana/uosc_subtitle_style/releases) 页面下载最新版 `uosc_subtitle_style-*.zip`，解压后按上面的目录树放到对应位置即可。
+
+</details>
 
 ### 绑定按键（可选）
 
@@ -110,22 +126,14 @@ ALT+Q script-message-to uosc_subtitle_style open-menu    # 字幕样式菜单
 - **uosc**（[tomasklaen/uosc](https://github.com/tomasklaen/uosc)）：菜单由它渲染。
   没装 uosc 也能用——自动降级为位置循环切换。
 
-## 使用说明
+<a id="sec-5"></a>
+## 🎮 使用说明
 
 ### uosc 菜单
 
 呼出菜单后，顶部是**编辑目标**（主字幕 / 次字幕），下面是位置预设、缩放、字体、字号、
 粗体、主色、描边、预设样式等区。所有修改即时生效并写入记忆；次字幕加载与否自动决定
 「次字幕」项是否可点。
-
-
-### 预览
-[![image.png](https://img.meituan.net/content/50ff6c2b3c5bbe2b66cc363ac948bc85356475.png)](https://img.meituan.net/content/50ff6c2b3c5bbe2b66cc363ac948bc85356475.png)
-[![image.png](https://img.meituan.net/content/1e35c10e718a0c79f640fa255e3b1115376117.png)](https://img.meituan.net/content/1e35c10e718a0c79f640fa255e3b1115376117.png)
-[![image.png](https://img.meituan.net/content/736a4a418027744a4cf2f8e23b2f233f429096.png)](https://img.meituan.net/content/736a4a418027744a4cf2f8e23b2f233f429096.png)
-[![image.png](https://img.meituan.net/content/7856c0c121fb14cee2286b83d5d1772d417958.png)](https://img.meituan.net/content/7856c0c121fb14cee2286b83d5d1772d417958.png)
-[![image.png](https://img.meituan.net/content/049ea738320986af80c11bcc7e461259322402.png)](https://img.meituan.net/content/049ea738320986af80c11bcc7e461259322402.png)
-
 
 ### 命令消息（script-message）
 
@@ -166,7 +174,7 @@ ALT+Q script-message-to uosc_subtitle_style open-menu    # 字幕样式菜单
 | `uosc-subtitle-style-preset.json` | 预设样式（颜色/描边/字体/字号/粗体/开关） |
 | `uosc-subtitle-style-fonts.json` | 本机字体枚举缓存（按目录签名失效） |
 
-## 在 uosc 控制栏加按钮（uosc.conf）
+### 在 uosc 控制栏加按钮（uosc.conf）
 
 uosc 的播放控制栏（`controls`）是在它**自己的**配置文件 `script-opts/uosc.conf` 里定义的
 （不是本脚本的 `uosc_subtitle_style.conf`）。本脚本的所有功能都通过
@@ -174,7 +182,7 @@ uosc 的播放控制栏（`controls`）是在它**自己的**配置文件 `scrip
 uosc 的 `controls` 里加一个 `command:` 按钮、把点击动作指向这条消息，就能在控制栏上多一个
 一键触发本脚本的按钮。
 
-### 语法
+#### 语法
 
 `controls` 是一串**逗号分隔**的条目，每个条目可选带可见性条件前缀 `<条件>`，整体格式：
 
@@ -194,12 +202,12 @@ uosc 的 `controls` 里加一个 `command:` 按钮、把点击动作指向这条
 - **命令**：填 `script-message-to uosc_subtitle_style <消息>`，`<消息>` 取上方表格任意一项。
 - **悬停提示**：`?` 后面是鼠标悬停显示的文字（中文直接写，无需引号）。
 
-### 在哪改
+#### 在哪改
 
 打开 mpv 配置目录下的 `script-opts/uosc.conf`，找到里面那一长行 `controls=...`，
 把新条目**用逗号**拼进现有列表即可（建议放在靠近 `subtitles` 的位置）。
 
-### 示例一：加一个「字幕样式」按钮（呼出菜单）
+#### 示例一：加一个「字幕样式」按钮（呼出菜单）
 
 ```conf
 <has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式
@@ -216,7 +224,7 @@ uosc 的 `controls` 里加一个 `command:` 按钮、把点击动作指向这条
 controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式,<has_sub>subtitles,...
 ```
 
-### 示例二：加多个按钮（菜单 / 字体选择器 / 重新扫描字体）
+#### 示例二：加多个按钮（菜单 / 字体选择器 / 重新扫描字体）
 
 ```conf
 <has_sub>command:tune:script-message-to uosc_subtitle_style open-menu?字幕样式,
@@ -226,7 +234,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 
 （三个条目用逗号连写；`<has_sub>` 让它们在无字幕时自动隐藏。）
 
-### 示例三：状态切换按钮（cycle，进阶）
+#### 示例三：状态切换按钮（cycle，进阶）
 
 若希望按钮能反映「预设开关」的开 / 关并随状态换图标，需要本脚本先注册一个可被 uosc 观察的
 属性。本脚本当前**未**注册此类属性，所以最稳妥是用上面的 `command:` 按钮触发
@@ -243,9 +251,10 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 >   图标名写错只会显示成文字，换一个正确的即可，不影响功能。
 > - 不想要按钮了，把对应条目从 `controls=` 里删掉即可。
 
-## 配置项
+<a id="sec-6"></a>
+## ⚙️ 配置项
 
-全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，25 项与脚本默认值一一对应）。
+全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，27 项与脚本默认值一一对应）。
 不放此文件 = 全部使用默认值。常用几项：
 
 | 配置 | 默认 | 说明 |
@@ -272,7 +281,8 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 > mpv 的 conf **不支持行尾注释**（`key=value  # 注释` 会把整段当值），所以仓库里的
 > conf 注释全部独立成行；自己改的时候请保持这个写法。
 
-## 兼容性与注意事项
+<a id="sec-7"></a>
+## ⚠️ 注意事项
 
 - **mpv ≥ 0.41**：依赖 `secondary-sub-pos` / `secondary-sub-scale` 等分轨属性。
 - **ASS 字幕**功能完整；**图形字幕（PGS/VOBSUB）**不走 libass，位置/样式均不可调。
@@ -282,7 +292,8 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 - Windows 实测（mpv 0.41）；Linux/macOS 的字体枚举路径已内置，理论可用但未经真机验证。
 - 首次打开字体选择器会有一次全盘字体冷枚举（约 1-3 秒），之后走签名缓存。
 
-## 测试
+<a id="sec-8"></a>
+## 🧪 测试
 
 仓库自带完整的单测与真机端到端测试（改代码后请先跑门禁，判据是退出码与汇总行）：
 
@@ -303,26 +314,49 @@ uosc 是可选依赖：探测到（`UOSC_MAIN` 环境变量，或 mpv 旁 `porta
 时自动复制进 `scripts/uosc/` 由 mpv 自动加载，字体选择器三项断言参与实测；
 探测不到时三项记 SKIP 并打印原因，不影响其余断言。
 
-## 来源与许可
+<a id="sec-9"></a>
+## 📄 文档
 
-- 运行时依赖 [uosc](https://github.com/tomasklaen/uosc)（LGPL-3.0，**不随本仓库分发**，
-  菜单经 `script-message` 与其交互）。
+- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论。
+- [贡献指南](CONTRIBUTING.md) —— 门禁清单与代码 / 文档约定。
+- [Release Notes](Release-Notes.md) —— 各版本发布说明。
+
+<a id="sec-10"></a>
+## 💬 反馈建议
+
+提交 Issue 时建议附上：
+
+- 系统 / 运行环境版本（mpv 版本、操作系统、uosc 版本）
+- 复现步骤
+- 相关日志（mpv 输出，可用 `--msg-level=all=info`）
+- 截图或录屏
+- 出问题的具体对象（字幕文件 / 轨道 / 配置项）
+
+问题反馈：[Issues](https://github.com/awujiana/uosc_subtitle_style/issues) ｜ [Discussions](https://github.com/awujiana/uosc_subtitle_style/discussions)
+
+<a id="sec-11"></a>
+## 🙏 参考与致谢
+
+- 运行时依赖 [uosc](https://github.com/tomasklaen/uosc)（LGPL-3.0，**不随本仓库分发**，菜单经 `script-message` 与其交互）。
 - 视觉测试判据依赖 [Pillow](https://python-pillow.org)（仅测试需要，运行时不依赖）。
-- 本仓库自身的 Lua / Python / conf 代码与文档基于 [AGPL-3.0](LICENSE) 开源。
+- 文档风格参考《我的 README 风格》输出规范。
 
-## 关联仓库
+<a id="sec-12"></a>
+## 🔗 关联仓库
 
 - [awujiana/mpv-awujiana](https://github.com/awujiana/mpv-awujiana) — mpv 整合包，本插件的实际运行环境
 - [awujiana/uosc_danmaku](https://github.com/awujiana/uosc_danmaku) — 同生态的 uosc 弹幕插件
 - [tomasklaen/uosc](https://github.com/tomasklaen/uosc) — 本插件依赖的 uosc UI 框架（第三方）
 
-## 作者联系方式
+<a id="sec-13"></a>
+## 📮 作者联系方式
 
 - GitHub：[@awujiana](https://github.com/awujiana)
 - 邮箱：[bingshanlengtie@qq.com](mailto:bingshanlengtie@qq.com)
 - 问题反馈：[Issues](https://github.com/awujiana/uosc_subtitle_style/issues) ｜ [Discussions](https://github.com/awujiana/uosc_subtitle_style/discussions)
 
-## 开源协议
+<a id="sec-14"></a>
+## 📄 开源协议
 
 本项目基于 [AGPL-3.0](LICENSE) 开源。任何人使用、修改或分发本项目的代码，
 若以网络服务器形式向用户提供交互服务，必须同样以 AGPL-3.0 公开其完整对应源代码。
