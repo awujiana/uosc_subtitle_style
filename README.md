@@ -254,7 +254,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 <a id="sec-6"></a>
 ## ⚙️ 配置项
 
-全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，29 项与脚本默认值一一对应）。
+全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，30 项与脚本默认值一一对应）。
 不放此文件 = 全部使用默认值。常用几项：
 
 | 配置 | 默认 | 说明 |
@@ -273,6 +273,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `preset_color` / `preset_outline` / `preset_outline_color` | `#FFFFFF` / `2` / `#000000` | 预设主色/描边粗细/描边色 |
 | `preset_font` / `preset_size` / `preset_bold` | 空 / `0` / `keep` | 预设字体/字号/粗体（空或 `keep` = 不动） |
 | `colored_threshold` | `40` | 判定「彩色字幕」的最小饱和度（max-min(RGB)，主色与描边色分别判定，任一达标即算） |
+| `colored_outline_min` | `0.005` | 内封像素采样：白字+**细**彩描边时，非主色高饱和像素的占比下限（彩描边常 <2%，故单用此更低阈值判彩色） |
 | `inspect_delay` / `report_ms` | `1.2` / `6000` | 载入后检测等待（秒）/ 报告显示时长（毫秒） |
 | `inspect_retries` / `inspect_retry_delay` | `15` / `1.0` | 检测重试次数 / 间隔：字幕未及时加载或片头无对白时，等第一句对白出现再检 |
 | `rebuild_delay` | `0.12` | override 切换的延迟设置（秒） |

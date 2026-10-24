@@ -82,6 +82,9 @@ local o = {
     sizes = '小=32,标准=38,大=46,特大=56', -- 字号候选：标签=数值（720p 等效像素），或裸数值
     colors = '白=#FFFFFF,黄=#FFFF00,淡黄=#FFFFC8,青=#00FFFF,淡蓝=#C8E6FF,粉=#FFC8DC,绿=#90EE90,橙=#FFA500', -- 主颜色候选（sub-color）
     colored_threshold = 40,   -- 判定「彩色字幕」的最小饱和度（max-min(RGB)）
+    colored_outline_min = 0.005, -- 内封像素采样：白字+彩描边时，高饱和描边像素占比下限。
+                              -- 彩描边是细线、占比常不足 2%（实测 06.mkv 粉描边 #ED74CF 仅 ~0.87%），
+                              -- 故对「非主色的高饱和元素」单独用这个更低阈值（0.5%）。
     inspect_delay = 1.2,      -- 载入后等待多久做样式检测（秒）
     report_ms = 6000,         -- 左上角检测报告的显示时长（毫秒）
     inspect_retries = 15,     -- 检测重试次数：字幕未及时加载/片头无对白时，等第一句对白出现再检
@@ -1473,6 +1476,9 @@ local function current_sub_path()
     return nil
 end
 
+-- 是否「彩色」：饱和度 max-min(RGB) ≥ 阈值（前向声明，sample_rendered_colors 先引用）
+local is_colored_hex
+
 -- 像素采样：暂停后取「含字幕」与「纯视频」两帧做差分，统计字幕像素颜色。
 -- 用于内封字幕（无法读取文件内容）时判断配色。
 local function sample_rendered_colors()
@@ -1503,7 +1509,7 @@ local function sample_rendered_colors()
     -- 主色 = 出现最多的「亮色」；描边色 = 出现最多的「暗色」；
     -- accent = 出现最多的「高饱和」色（彩字或彩色描边都归它——白字+紫描边时主色是白、
     -- 而描边亮度落在 60~100 的缝档里两头不沾，只能靠 accent 抓到）
-    local color, outline, accent
+    local color, outline, accent, outline_from_accent
     for _, it in ipairs(arr) do
         local rr, gg, bb = it.k:match('^#(%x%x)(%x%x)(%x%x)$')
         if rr then
@@ -1517,14 +1523,26 @@ local function sample_rendered_colors()
         end
     end
     -- 没有暗色描边、但存在高饱和色且不是主色本身时，把它当描边色报告（如紫描边白字）
-    if not outline and accent and accent.k ~= color then outline = accent.k end
-    -- 差分已剔除背景，计数里只剩字幕像素 ⇒ 高饱和色占比 ≥2% 即判「彩色字幕」
-    local colored = accent ~= nil and (accent.v / total) >= 0.02
-    return {color = color, outline_color = outline, total = total, colored = colored}
+    if not outline and accent and accent.k ~= color then
+        outline = accent.k
+        outline_from_accent = true   -- 该描边色由 accent 派生，其饱和度不可单独采信（防 fringe 误判）
+    end
+    -- 彩色判定（与文件解析路径 is_colored_hex 对齐，另补内封专用规则）：
+    --   ① 主色饱和 = 彩字；② 「真实暗描边」饱和 = 深色饱和描边；
+    --   ③ 存在非主色的高饱和元素（accent≠主色）且占比 ≥ colored_outline_min = 白字+彩描边。
+    -- 彩描边是细线、占比常不足 2%（实测 06.mkv 粉描边 #ED74CF 仅 ~0.87%，旧 2% 阈值漏判），
+    -- 故对细描边走更低的专用阈值；差分已剔除背景，计数里只剩字幕像素，≥0.5% 的单幅 saturated
+    -- 基本即 deliberate 彩色元素，而非抗锯齿 fringe 的零星像素。
+    local accent_frac = accent and (accent.v / total) or 0
+    local colored = is_colored_hex(color)
+        or (not outline_from_accent and is_colored_hex(outline))
+        or (accent ~= nil and accent.k ~= color
+            and accent_frac >= (o.colored_outline_min or 0.005))
+    return {color = color, outline_color = outline, accent = accent and accent.k,
+            total = total, colored = colored}
 end
 
--- 是否「彩色」：饱和度 max-min(RGB) ≥ 阈值
-local function is_colored_hex(hex)
+is_colored_hex = function(hex)
     local rr, gg, bb = tostring(hex or ''):match('^#(%x%x)(%x%x)(%x%x)$')
     if not rr then return false end
     rr, gg, bb = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
@@ -1555,6 +1573,7 @@ local function inspect_style()
                 info.source = 'pixels'
                 info.color = s.color
                 info.outline_color = s.outline_color
+                info.accent = s.accent
                 info.embedded_fonts = {}
                 info.colored = s.colored
             end
@@ -1618,8 +1637,10 @@ end
 local function preset_report(info, applied, skipped_dual)
     local lines = {}
     local src = info.source == 'file' and '外挂字幕' or (info.source == 'pixels' and '内封字幕(像素采样)' or '字幕')
-    lines[#lines + 1] = string.format('%s：主色 %s · 描边 %s',
-        src, info.color or '未知', info.outline_color or '未知')
+    local accent_note = (info.accent and info.accent ~= info.color
+        and info.accent ~= info.outline_color) and (' · 饱和 ' .. info.accent) or ''
+    lines[#lines + 1] = string.format('%s：主色 %s · 描边 %s%s',
+        src, info.color or '未知', info.outline_color or '未知', accent_note)
     local extra = {}
     if info.font then extra[#extra + 1] = '字体 ' .. info.font end
     if info.size then extra[#extra + 1] = '字号 ' .. string.format('%g', info.size) end

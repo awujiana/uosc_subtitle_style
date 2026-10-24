@@ -1633,6 +1633,81 @@ flush_timers()                   -- 首检跑(armed=true)，此时对白已在 �
 check('inspect-after-armed-detects', env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
 restore39()
 
+-- T46 白字 + 细彩描边（内封像素路径）：描边占比 <2% 也要判「彩色」并转黑白。
+-- 回归 06.mkv：白字(#FFFFFF ~22%) + 黑阴影(#000000 ~1.5%) + 粉描边(#ED74CF ~0.87%)。
+-- 旧逻辑只认「高饱和色占比 ≥2%」，0.87% 被漏判成「非彩色，保持原样」——紫/粉描边不转黑白。
+local restore46 = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-text'] = '内封字幕文本'
+env.props['track-list'] = {{type = 'sub', id = 1}}  -- 内封：无 external-filename
+local GY = {0x80, 0x80, 0x80}         -- 背景灰（未变化的像素）
+local WH = {0xFF, 0xFF, 0xFF}         -- #FFFFFF 主色(白)
+local BK = {0x00, 0x00, 0x00}         -- #000000 真实暗描边/阴影
+local PK = {0xCF, 0x74, 0xED}         -- #ED74CF 粉描边(bgr0)：非主色的高饱和元素
+local FW, FH = 64, 64                 -- 64x64，步进2 → 32x32=1024 个采样点
+local function bigframe(plan)
+    local data = {}
+    for y = 0, FH - 1 do
+        for x = 0, FW - 1 do
+            local c = plan(x, y) or GY
+            data[#data + 1] = string.char(c[1], c[2], c[3], 255)
+        end
+    end
+    return {w = FW, h = FH, stride = FW * 4, data = table.concat(data)}
+end
+-- 采样点(偶数 x,y)按序铺色：900 白 + 110 黑 + 10 粉，其余灰 ⇒ 粉占比 10/1020 ≈ 0.98%
+local spots46 = {}
+for y = 0, FH - 1, 2 do for x = 0, FW - 1, 2 do spots46[#spots46 + 1] = {x, y} end end
+local cmap46 = {}
+for i, pt in ipairs(spots46) do
+    local c
+    if i <= 900 then c = WH elseif i <= 1010 then c = BK elseif i <= 1020 then c = PK end
+    cmap46[pt[2]] = cmap46[pt[2]] or {}
+    cmap46[pt[2]][pt[1]] = c
+end
+env.raw_shots = {
+    subtitles = bigframe(function(x, y) return cmap46[y] and cmap46[y][x] or nil end),
+    video = bigframe(function() return nil end),
+}
+load_script()
+env.messages['inspect']()
+local rpt46 = last_showtext() or ''
+check('t46-thin-outline-source', rpt46:find('内封字幕(像素采样)', 1, true) ~= nil, rpt46)
+check('t46-thin-outline-accent-shown', rpt46:find('饱和 #ED74CF', 1, true) ~= nil, rpt46)
+-- 粉描边占比 <2% 仍判彩色 → 套用预设(白/黑)
+check('t46-thin-outline-colored-applies', env.props['sub-color'] == '#FFFFFF',
+    tostring(env.props['sub-color']))
+flush_timers()   -- override 切到 force 走 rebuild_delay 延迟，冲计时器后生效
+check('t46-thin-outline-force', env.props['sub-ass-override'] == 'force',
+    tostring(env.props['sub-ass-override']))
+restore46()
+
+-- T46b 抗锯齿 fringe 守卫：白字 + 极少量高饱和像素(<colored_outline_min)且无暗描边
+--       ⇒ 仍判「非彩色」，不因零星饱和像素误转。防 colored_outline_min 过低导致误判。
+local restore46b = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-text'] = '内封字幕文本'
+env.props['track-list'] = {{type = 'sub', id = 1}}
+local cmap46b = {}
+for i, pt in ipairs(spots46) do
+    local c
+    if i <= 900 then c = WH elseif i <= 903 then c = PK end   -- 粉仅 3/903 ≈ 0.33% < 0.5%
+    cmap46b[pt[2]] = cmap46b[pt[2]] or {}
+    cmap46b[pt[2]][pt[1]] = c
+end
+env.raw_shots = {
+    subtitles = bigframe(function(x, y) return cmap46b[y] and cmap46b[y][x] or nil end),
+    video = bigframe(function() return nil end),
+}
+load_script()
+env.messages['inspect']()
+-- 无暗描边、粉占比 <0.5% ⇒ 非彩色，不套用（fringe 不进 is_colored_hex(outline)）
+check('t46b-fringe-not-colored', env.props['sub-color'] == nil,
+    tostring(env.props['sub-color']))
+restore46b()
+
 restore13(); restore14()
 
 restore(); restore2(); restore3(); restore4(); restore5(); restore6(); restore7()
