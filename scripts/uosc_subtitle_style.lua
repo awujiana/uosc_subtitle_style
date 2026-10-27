@@ -374,6 +374,11 @@ local inspect_done = false      -- 本文件是否已完成一次检测（成功
 local inspect_attempts = 0      -- 本文件已重试次数
 local inspect_scheduled = false -- 是否已有待执行的重试计时器（防重复排程）
 local inspect_armed = false     -- 首检(inspect_delay)是否已跑过；跑过才允许 sub-text 观察器触发
+-- 本文件累计检测尝试次数（硬上限）：seek / 新一段对白都会刷新 inspect_attempts，
+-- 若不加总上限，字幕始终不可采样（如 sub-visibility=no）时会无界重试、反复截图。
+local inspect_total = 0
+local INSPECT_TOTAL_CAP = 100
+local sub_text_was_empty = true -- 上一帧 sub-text 是否为空（用于识别「新一段对白开始」）
 local run_inspect
 
 local function write_prop(prop, value)
@@ -1034,6 +1039,7 @@ local function reset_style()
     -- 恢复默认后重新检测一次（字幕可能在首次检测之后才加载出来 / 才出对白）
     inspect_done = false
     inspect_attempts = 0
+    inspect_total = 0        -- 用户显式动作：重置总额度，避免被硬上限拦住
     mp.add_timeout(o.inspect_delay or 1.2, function() run_inspect() end)
     flash('已恢复默认（主/次位置已避让 · 缩放 ×1.00 · 样式全原样）')
 end
@@ -1666,6 +1672,8 @@ end
 run_inspect = function(gen, allow_retry)
     gen = gen or inspect_gen
     if gen ~= inspect_gen or inspect_done then return end
+    if inspect_total >= INSPECT_TOTAL_CAP then return end
+    inspect_total = inspect_total + 1
     local info = inspect_style()
     if not info then
         -- 字幕尚未加载 / 片头尚无对白：排一次重试（防重复排程），等第一句对白出现
@@ -2131,6 +2139,7 @@ end)
 mp.register_script_message('inspect', function()
     inspect_done = false      -- 手动重检：无视「本文件已检测过」守卫
     inspect_attempts = 0
+    inspect_total = 0         -- 手动重检：重置总额度，确保不被硬上限拦住
     run_inspect(nil, false)   -- 手动重检不进入重试循环
 end)
 mp.register_script_message('style-preset', set_style_preset)
@@ -2170,9 +2179,17 @@ mp.observe_property('secondary-sub-scale', 'number',
 -- 之前（守住「先看到原字幕、再转黑白」的时序）。inspect_done：检测成功后不再随每句对白重跑。
 mp.observe_property('sub-text', 'string', function(_, val)
     if inspect_done or not inspect_armed then return end
-    if type(val) == 'string' and val ~= '' then
-        run_inspect()
+    local is_empty = not (type(val) == 'string' and val ~= '')
+    local new_segment = (not is_empty) and sub_text_was_empty
+    sub_text_was_empty = is_empty
+    if is_empty then return end
+    -- 新一段对白开始（片头结束进正片、或 seek 到有字幕处后的第一句）：刷新重试额度。
+    -- 否则片头/片尾无对白时首轮额度（inspect_retries）会被耗尽，此处再检时额度已满，
+    -- 采样一次失败就永久放弃——表现为「拖动进度到正片后，彩色字幕既不识别也不转黑白」。
+    if new_segment and inspect_total < INSPECT_TOTAL_CAP then
+        inspect_attempts = 0
     end
+    run_inspect()
 end)
 
 -- end-file 期间 mpv 会按 reset-on-next-file 重置 sub-pos/sub-scale，
@@ -2197,6 +2214,8 @@ mp.register_event('file-loaded', function()
     inspect_gen = inspect_gen + 1
     inspect_done = false
     inspect_attempts = 0
+    inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
+    sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
     inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
     local gen = inspect_gen
     mp.add_timeout(o.inspect_delay or 1.2, function()
@@ -2206,6 +2225,22 @@ mp.register_event('file-loaded', function()
 end)
 -- playback-restart 覆盖 seek/reload 等造成的重载
 mp.register_event('playback-restart', function() apply_all(false) end)
+
+-- 拖动进度后重新给检测一次机会：片头/片尾无对白时首轮重试额度会被耗尽，
+-- 之后 seek 到有字幕的正片若不再刷新额度，一次采样失败就永久放弃（即本次 bug）。
+-- 0.3s 去抖，避免拖动过程中连续 seek 触发多次采样；inspect_armed 门保证不抢在首检之前。
+local seek_rearm_timer = nil
+mp.register_event('seek', function()
+    if inspect_done or not inspect_armed then return end
+    if inspect_total >= INSPECT_TOTAL_CAP then return end
+    if seek_rearm_timer then seek_rearm_timer:kill() end
+    seek_rearm_timer = mp.add_timeout(0.3, function()
+        seek_rearm_timer = nil
+        if inspect_done or inspect_total >= INSPECT_TOTAL_CAP then return end
+        inspect_attempts = 0        -- 刷新重试额度
+        run_inspect()               -- 立即再检；采样失败则按新额度继续重试
+    end)
+end)
 
 msg.info(string.format('sub-style loaded (target=%s pos=%d scale=%.2f persist=%s) %s',
     state.target, state.main.pos, state.main.scale, tostring(o.persist), style_desc()))

@@ -1708,6 +1708,62 @@ check('t46b-fringe-not-colored', env.props['sub-color'] == nil,
     tostring(env.props['sub-color']))
 restore46b()
 
+-- T47 seek 后重新检测（本 bug 回归）：
+--   开头无对白（内封字幕，像素采样拿不到）→ 首轮重试额度耗尽 →
+--   seek 到有字幕处必须刷新额度并重新检测、套用预设。
+--   修复前：额度耗尽后 seek 不刷新，一次采样失败就永久放弃
+--   （表现为「打开即 OP/ED，拖动进度到正片后彩色字幕既不识别也不转黑白」）。
+local restore47 = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-text'] = ''                            -- 开头无对白
+env.props['track-list'] = {{type = 'sub', id = 1}}    -- 内封：无 external-filename
+local GRAY_ROWS = {
+    {GRAY, GRAY, GRAY, GRAY},
+    {GRAY, GRAY, GRAY, GRAY},
+    {GRAY, GRAY, GRAY, GRAY},
+    {GRAY, GRAY, GRAY, GRAY},
+}
+-- 两帧完全相同 ⇒ 差分 total==0 ⇒ 采样返回 nil（字幕未渲染）
+env.raw_shots = { subtitles = synth_frame(GRAY_ROWS), video = synth_frame(GRAY_ROWS) }
+load_script()
+env.events['file-loaded']()
+flush_timers()                       -- inspect_delay 后的首检 → nil → 排一次重试
+for _ = 1, 40 do                     -- 耗尽重试额度（默认 inspect_retries=15）
+    if #env.timers == 0 then break end
+    flush_timers()
+end
+check('t47-budget-exhausted', #env.timers == 0, 'timers=' .. #env.timers)
+check('t47-not-applied-before-seek', env.props['sub-color'] == nil,
+    tostring(env.props['sub-color']))
+-- seek 到有字幕处，但「刚落地字幕尚未渲染」⇒ 首采失败，必须靠重试兜底。
+-- 这正是真实时序（seek 后字幕要下一帧才画出来），也是本 bug 的关键：
+-- 额度耗尽后若不刷新，首采失败就再没机会重试。
+env.props['sub-text'] = '正片对白'
+env.raw_shots = { subtitles = synth_frame(GRAY_ROWS), video = synth_frame(GRAY_ROWS) }
+env.events['seek']()                 -- 触发 seek 重新武装（刷新额度）
+flush_timers()                       -- 0.3s 去抖 → run_inspect → 采样失败 → 排重试
+-- 下一帧字幕渲染出来（黄色彩字）
+env.raw_shots = {
+    subtitles = synth_frame({
+        {YELLOW, GRAY, YELLOW, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+        {BLACK, GRAY, YELLOW, GRAY},
+        {GRAY, GRAY, GRAY, GRAY},
+    }),
+    video = synth_frame(GRAY_ROWS),
+}
+for _ = 1, 8 do                      -- 共享通道立即写；override 延迟重建才切 force
+    if env.props['sub-ass-override'] == 'force' then break end
+    if #env.timers == 0 then break end
+    flush_timers()
+end
+check('t47-after-seek-applied', env.props['sub-color'] == '#FFFFFF',
+    tostring(env.props['sub-color']))
+check('t47-after-seek-force', env.props['sub-ass-override'] == 'force',
+    tostring(env.props['sub-ass-override']))
+restore47()
+
 restore13(); restore14()
 
 restore(); restore2(); restore3(); restore4(); restore5(); restore6(); restore7()
