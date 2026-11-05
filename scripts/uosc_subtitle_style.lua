@@ -1,4 +1,8 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
+-- @version: 1.0.10
+-- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
+--   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
+--   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
 -- 用途：把「底部字幕」在 原位 / 上移 / 中下 / 中部 / 中上 / 顶部 之间一键切换，
 --   并可整体缩放、改字体、字号、粗体。UI 直接用 uosc 的菜单
 --   （script-message-to uosc open-menu）。
@@ -42,9 +46,38 @@
 --     粗体只能走 style-overrides 列表（解码器级共享），列表变化会触发一次
 --     重建——这是 mpv 唯一通道，菜单已注明。
 --   * 粗体（ASS）→ 只能走列表 Bold=（force 的 flags 不含 ATTRIBUTES 位）。
+--   * **force 对带 \pos 的 signs 完全无效**（2026-11-05 真机像素实测）：libass 的选择性
+--     覆盖只作用于 !explicit 事件。Netflix 内封 ASS 每行都带 \pos，实测 force 前后
+--     差分像素一字不差（主色 #8B8B8B 7943 个像素完全不变），所以改字体/主色会「没反应」。
+--     正解是同时写 sub-ass-style-overrides 的 PrimaryColour/OutlineColour/FontName：
+--     它改写 track->styles 表，所有引用该 style 的事件（含 \pos）都拿到新值。
+--     代价：列表是解码器级共享（主/次轨同变），且列表变化会触发一次重建。
+--   * 灰色字幕（如 #8B8B8B）饱和度为 0，旧的「仅彩色字幕」判定会把它当标准黑白字幕
+--     跳过；现新增灰阶识别，灰色对白/注释同样套用黑白预设。
 --   * 图形字幕（PGS/VOBSUB，image=true）不走 libass，位置/缩放/样式均不可调。
+--   * 上下黑边贴合（v1.0.7）：视频文件内嵌的上下黑条（如 3840×2160 里上下各
+--     120px）mpv 完全感知不到——osd-dimensions.mt/mb 是 0，sub-use-margins 帮不上忙。
+--     本脚本用 screenshot-raw('video') 逐行亮度扫描出黑条厚度，再按
+--     sub-font-size × 帧高/720 估算字幕盒高度，把 sub-scale 限到黑条放得下，
+--     并用共享的 sub-margin-y 把字幕居中在黑条内：主轨 100（下黑边）、次轨 0（上黑边）。
+--     ⚠ 带 \pos 的 explicit ASS 事件对 sub-pos/sub-scale 豁免（mpv 硬边界），
+--       这类 signs 保持原位；窗口 letterbox 黑边由 mpv 原生 sub-use-margins 负责。
 --   * ⚠ 不要用 sub-reload 推动重建：本机实测它会让播放直接结束
 --     （"Exiting... (End of file)"），历届 E2E 的异常均源于此。
+--   * ⚠ uosc 菜单 value 是**命令字符串**，uosc 用 mp.command() 执行；mpv 把 `#` 当
+--     注释起始符 ⇒ `color #FFFFFF` 的参数会被整段吞掉，退化成「恢复字幕原样」。
+--     凡含 #RRGGBB 的 value 必须用双引号包住参数。
+--   * 内封定位 ASS 的缩放/字号（v1.0.9）：带 \pos 的 explicit 事件对
+--     sub-pos / sub-scale / sub-font-size 全部豁免；唯一有效通道是
+--     sub-ass-style-overrides 的 Fontsize（改写 ASS 样式表）。脚本从
+--     sub-ass-extradata 读出原始 Style 行的 Fontsize 与 PlayResY，按
+--     「字号倍率 × 有效缩放」折成新的 Fontsize 写回，并把两轨 sub-scale 归 1
+--     以免 scale 模式下普通对白被双叠加。无任何偏差（字号=原样、缩放=×1、
+--     未贴合黑边）时**不写** Fontsize，保留 ASS 各 style 的原始大小层级。
+--     黑边贴合的限缩倍率同样并入 Fontsize，故内封 \pos 字幕也会缩进黑边；
+--     估算盒高改用 原始 Fontsize × 1.2 × 帧高/PlayResY，比 720p 等效估算更准。
+--     代价：Fontsize 是解码器级共享列表 ⇒ 缩放/字号在此模式下主/次轨同变；
+--     且样式表只有一个 Fontsize，多 style 的字幕会被统一到同一字号。
 --
 -- 入口（script-message）：
 --   open-menu       打开 uosc 菜单（未检测到 uosc 时降级为循环切换）
@@ -55,6 +88,7 @@
 --   nudge <±%>      以当前值为基准微调目标轨 sub-pos
 --   font <字体名|reset>     字体覆盖（名字含空格，参数会自动拼回）
 --   size <像素值|reset>     字号覆盖（720p 等效像素；ASS 下会启用 force）
+--   size-step <±像素>       字号 ±1px 连续微调（黑边贴合时自动存进全局预设）
 --   bold <on|off|reset>    粗体覆盖
 --   outline <粗细|reset>        描边粗细（sub-outline-size）
 --   outline-color <#RRGGBB|reset>  描边颜色（sub-outline-color）
@@ -65,6 +99,8 @@
 --   preset-toggle-dual / preset-toggle-enabled / inspect   预设样式与样式检测
 --   reset           恢复默认并清除记忆
 --   fix-override    把目标轨 sub-ass-override 设为 scale（位置/样式的前置条件）
+--   letterbox-toggle / letterbox-refresh  上下黑边贴合开关 / 立即重新检测
+--   ass-fontsize-toggle     内封定位 ASS 的缩放/字号通道开关
 
 local msg = require('mp.msg')
 local utils = require('mp.utils')
@@ -80,7 +116,7 @@ local o = {
     fallback_cycle = true, -- 无 uosc 时 open-menu 降级为循环切换
     fonts = 'Noto Sans CJK SC,Noto Serif CJK SC,Noto Sans CJK KR,Noto Serif CJK KR', -- 字体候选（逗号分隔）
     sizes = '小=32,标准=38,大=46,特大=56', -- 字号候选：标签=数值（720p 等效像素），或裸数值
-    colors = '白=#FFFFFF,黄=#FFFF00,淡黄=#FFFFC8,青=#00FFFF,淡蓝=#C8E6FF,粉=#FFC8DC,绿=#90EE90,橙=#FFA500', -- 主颜色候选（sub-color）
+    colors = '白=#FFFFFF,黑=#000000,深灰=#404040,灰=#808080,浅灰=#C0C0C0,黄=#FFFF00,淡黄=#FFFFC8,青=#00FFFF,淡蓝=#C8E6FF,粉=#FFC8DC,绿=#90EE90,橙=#FFA500', -- 主颜色候选（sub-color）
     colored_threshold = 40,   -- 判定「彩色字幕」的最小饱和度（max-min(RGB)）
     colored_outline_min = 0.005, -- 内封像素采样：白字+彩描边时，高饱和描边像素占比下限。
                               -- 彩描边是细线、占比常不足 2%（实测 06.mkv 粉描边 #ED74CF 仅 ~0.87%），
@@ -103,8 +139,103 @@ local o = {
     rebuild_delay = 0.12,     -- override 切换的延迟设置（秒；同 tick 设属性+重建会读旧值）
     dual_layout = true,       -- 中日双语(双轨)自动布局：按语言识别，日文轨置底+缩小、中文轨其上
     dual_layout_scale = 0.8,  -- 双语布局中日文轨的缩放倍率（视觉上小于中文轨）
+    -- v1.0.6：把主色/描边色/字体同步写进 sub-ass-style-overrides，使带 \pos 的
+    -- 顶部字幕 / signs 也能改色改字体（force 的选择性覆盖对 explicit 事件豁免）。
+    -- 关掉则退回纯 force 通道：只改普通对白，但保留主/次分轨能力。
+    style_override_all = true,
+    -- 灰色字幕（#8B8B8B 这类饱和度为 0 的非纯白/纯黑主色）也算「非标准黑白」，
+    -- 载入时同样自动套用黑白预设。关掉则只有彩色字幕才套用。
+    preset_include_gray = true,
+    -- v1.0.7 上下黑边贴合：检测到视频内嵌上下黑条时，主轨进下黑边、次轨进上黑边。
+    letterbox_fit = true,
+    letterbox_min_bar = 0.03,   -- 黑条至少占帧高 3% 才启用（防误判暗场）
+    letterbox_dark_luma = 20,   -- 行平均亮度低于此视为黑条
+    letterbox_pad = 0.10,       -- 字幕盒相对黑条高度留 10% 余量
+    letterbox_sample_step = 8,  -- 列采样步长（4K 下每 8 列取 1 像素，控制耗时）
+    letterbox_delay = 0.6,      -- 首检延迟（秒，相对 inspect_delay 之后，等画面稳定）
+    -- v1.0.8「所有的内封字幕都要被检查」：
+    --   ① 旧检测只看当前选中的一条轨，且成功一次就 inspect_done=true，
+    --      文件里其它内封轨（简/繁/英/注释 signs 轨）永远不会被检查。
+    --   ② 套用判据只看「是否彩色 / 是否灰阶」，任何没落进这两个窄区间的内封配色
+    --      都会像用户截图那样被判「非彩色字幕，保持原样」（主色 #8B8B8B）。
+    inspect_all_internal = true,  -- 统计全部内封轨；切换 sid 时对新轨重新检测；报告逐轨列出
+    preset_all_internal = true,   -- 内封轨除「标准白字黑边」外一律套用黑白预设（不再靠颜色筛选）
+    -- v1.0.9「定位字幕也能缩放/改字号」：
+    --   真机实测（Dead-End...mkv 内封 ASS，sid=3）：sub-pos / sub-scale /
+    --   sub-font-size / sub-margin-y 全部改得动属性，画面像素却一字不差——
+    --   带 \pos 的 explicit ASS 事件对它们完全豁免；只有写进
+    --   sub-ass-style-overrides（ASS 样式表）的 FontName / Fontsize 才生效。
+    --   隔离实验（640x360 双行 ASS：\pos 顶部行 + 普通底部行，字高 16px）：
+    --     sub-scale=1.5          → 顶部 16 / 底部 25（只作用普通行）
+    --     Fontsize=36,scale=1    → 顶部 25 / 底部 25（两行都作用）
+    --     Fontsize=36,scale=1.5  → 顶部 25 / 底部 37（scale 模式下普通行双叠加！）
+    --     force + Fontsize=48 + scale=1.5 → 顶部 33 / 底部 25（各自恰好 1.5×，不叠加）
+    --   即 force 下两条通道天然互不干扰；scale 下必须把 sub-scale 归 1，
+    --   把缩放完全折进 Fontsize。原始字号从 sub-ass-extradata 的 Style 行读，
+    --   不用硬编码比例（内封轨实测 PlayResY=288、Default Fontsize=21）。
+    --   Fontsize 支持小数（24 → 24.5 时底部字高 16 → 17px），故 ±1px 逐次生效。
+    ass_fontsize = true,        -- 内封定位 ASS：把缩放/字号折进 ASS Fontsize
+    ass_fontsize_ratio = 0.5625, -- 兜底：读不到样式表时 720p px → ASS 单位（32px ↔ 18）
+    size_baseline = 32,         -- 兜底基准 px；±1px 实际优先从 mpv 基线字号起步
+    size_step = 1,              -- 菜单「字号 −/+」步长（720p 等效像素，可连续点）
+    size_min = 12,
+    size_max = 96,
+    size_step_saves_preset = true, -- 黑边贴合时 ±字号 一并存进全局预设缓存
 }
 options.read_options(o, 'uosc_subtitle_style')
+
+-- 运行时开关（菜单可即时切换，不落盘；重启回到 conf 出厂值）
+local runtime = {
+    override_all = o.style_override_all and true or false,
+    include_gray = o.preset_include_gray and true or false,
+    bar_fit = o.letterbox_fit and true or false,
+    ass_fontsize = o.ass_fontsize and true or false,
+}
+
+--------------------------------------------------------------------
+-- 对外 API（v1.0.10，契约见 docs/api-uosc-subtitle-style.md）
+--   ① 订阅：user-data/uosc_subtitle_style/state（JSON）+ /version
+--   ② 请求-响应：script-message-to uosc_subtitle_style api <reply_to> <id> <action> ...
+--      → script-message-to <reply_to> uosc_subtitle_style-api-response <id> <json>
+-- 只暴露只读快照 + 白名单动作转发，不改变任何既有菜单/消息行为。
+--------------------------------------------------------------------
+local API_VERSION = '1.0.0'
+local API_PREFIX = 'uosc_subtitle_style'
+local publish_api_state  -- 前向声明：apply_all()/flash() 在定义之前就会调用
+
+-- #RRGGBB → ASS 颜色 &H00BBGGRR（sub-ass-style-overrides 里用的格式，BGR 倒序）
+local function hex_to_ass_color(hex)
+    local rr, gg, bb = tostring(hex or ''):match('^#?(%x%x)(%x%x)(%x%x)$')
+    if not rr then return nil end
+    return string.format('&H00%s%s%s', bb:upper(), gg:upper(), rr:upper())
+end
+
+-- 灰阶判定：饱和度低于彩色阈值，且亮度既不是黑也不是白（#8B8B8B → true）。
+-- 像素采样会有抗锯齿/明暗偏差，故用区间而非等值比较。v1.0.8 把区间放宽到
+-- [30, 235]：深灰 #2A2A2A / 浅灰 #EAEAEA 这类「看着像黑白但仍偏灰」的内封字幕
+-- 也要能被识别，不再因阈值卡在 40/220 而被判「非彩色，保持原样」。
+local function is_gray_hex(hex)
+    local rr, gg, bb = tostring(hex or ''):match('^#(%x%x)(%x%x)(%x%x)$')
+    if not rr then return false end
+    local r2, g2, b2 = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
+    local lum = (r2 + g2 + b2) / 3
+    local sat = math.max(r2, g2, b2) - math.min(r2, g2, b2)
+    return sat < (o.colored_threshold or 40) and lum >= 30 and lum <= 235
+end
+
+-- 菜单项 value 是命令字符串（uosc 用 mp.command 执行）。mpv 命令解析把 # 当注释符，
+-- 所以含 #RRGGBB 的参数必须加双引号；字体名含空格不影响（脚本用 varargs 拼回）。
+local function menu_cmd(...)
+    local parts = {}
+    for i = 1, select('#', ...) do
+        local v = tostring((select(i, ...)))
+        if v:find('#', 1, true) or v:find(';', 1, true) then
+            v = '"' .. v:gsub('\\', '\\\\'):gsub('"', '\\"') .. '"'
+        end
+        parts[#parts + 1] = v
+    end
+    return table.concat(parts, ' ')
+end
 
 -- 字体候选表（菜单「字体」区）
 local FONT_PRESETS = {}
@@ -246,8 +377,10 @@ local baseline = {
     color = nil,
     outline = nil,
     outline_color = nil,
+    margin_y = 22,   -- sub-margin-y 是共享且不在 reset-on-next-file 里，改过必须还原
 }
 do
+    baseline.margin_y = mp.get_property_number('sub-margin-y', 22)
     baseline.main_override = tostring(mp.get_property('sub-ass-override') or 'scale')
     baseline.sec_override = tostring(mp.get_property('secondary-sub-ass-override') or 'strip')
     baseline.font = mp.get_property('sub-font')
@@ -360,11 +493,31 @@ end
 -- ⚠ save_state 定义在后面的持久化区：这里必须前向声明，否则闭包里的
 --   save_state 会解析成全局 nil（Lua 局部量作用域从声明之后才开始）。
 local save_state
+-- 菜单刷新：定义在后面的 uosc 菜单区，set_* 里要调用，必须前向声明
+local refresh_menu
 local expected_value = {}     -- prop -> 本脚本最后写入的值
 local in_reset_window = false -- end-file 期间 mpv 会按 reset-on-next-file 重置，勿采纳
 -- CN+JP 双语自动布局（per-file 覆盖层）：非 nil 时 apply_all 用布局值写两轨位置/缩放，
 -- 用户手动设位置/缩放或外部改动即置 nil 关闭。不写状态文件、不跨文件泄漏。
 local layout = nil
+-- 上下黑边贴合（v1.0.7，per-file 覆盖层）：检测到视频内嵌上下黑条时，
+-- {top, bottom, scale, margin_y}；不写状态文件、不跨文件泄漏。
+-- 优先级高于 CN+JP 布局（黑边贴合要求主轨 100 / 次轨 0，天然分列上下）。
+local barfit = nil
+local barfit_gen = 0   -- 切文件后作废上个文件遗留的黑边检测定时器
+-- v1.0.9：内封 ASS 的样式表在 file-loaded 当刻可能尚未由 demuxer 填好，
+-- 首个字幕包到达后才能读到 sub-ass-extradata；置 true 时在 sub-text 观察器里
+-- 补一次 apply_all，把缩放/字号折进 Fontsize（只补一次，不反复重建）。
+local ass_pending = false
+local disable_barfit   -- 前向声明：adopt_external / set_pos / set_scale 要调用
+local refresh_barfit   -- 前向声明：file-loaded 与菜单消息要调用
+-- 检测报告文案缓存：黑边贴合要触发 OSD 微扰重绘，会用空白 show-text 覆盖
+-- 左上角报告；重绘后必须把报告补回来，否则用户看不到检测结果。
+local last_report_text = nil
+local report_clear_timer = nil
+local function barfit_active()
+    return runtime.bar_fit and barfit ~= nil
+end
 
 -- 样式检测状态与前向声明（reset_style / file-loaded / sub-text 观察器都要用）：
 -- run_inspect 定义在后面的「预设样式与样式检测」区，此处必须前向声明，
@@ -379,6 +532,9 @@ local inspect_armed = false     -- 首检(inspect_delay)是否已跑过；跑过
 local inspect_total = 0
 local INSPECT_TOTAL_CAP = 100
 local sub_text_was_empty = true -- 上一帧 sub-text 是否为空（用于识别「新一段对白开始」）
+-- v1.0.8：按轨记录检测结果，使「文件里每一条内封字幕轨」都至少被检查一次。
+-- key = track-list 的 sub 轨 id，value = 该轨是否已成功检出（nil = 尚未检查）。
+local inspected_internal = {}
 local run_inspect
 
 local function write_prop(prop, value)
@@ -394,6 +550,7 @@ local function adopt_external(prop, track_key, field)
         if math.abs(v - state[track_key][field]) < 0.001 then return end
         state[track_key][field] = v
         layout = nil   -- 用户从外部(r/t 键/其它脚本)改了位置/缩放 ⇒ 关闭本次文件的自动布局
+        disable_barfit()  -- 同理让出黑边贴合，并还原共享的 sub-margin-y
         save_state()
     end
 end
@@ -547,8 +704,11 @@ end
 -- 用户通过 sub-ass-style-overrides-append 追加的条目（如 Encoding=-1）会被冲掉，
 -- 因此必须先读回现有列表、剔除旧的管理键、再整表写回。
 -- FontName/Fontsize 是早期版本写入过的键，保留以清理旧状态残留；
--- 现行版本只写 Bold（字体/字号走 force 通道）。
-local MANAGED_OVERRIDE_KEYS = {'FontName', 'Fontsize', 'Bold'}
+-- v1.0.6 起还会写 FontName / PrimaryColour / OutlineColour（全样式覆盖通道），
+-- 「恢复原样」时必须把这些键一并剔除，否则 ASS 原色再也回不来。
+local MANAGED_OVERRIDE_KEYS = {
+    'FontName', 'Fontsize', 'Bold', 'PrimaryColour', 'OutlineColour', 'Outline',
+}
 
 local function same_list(a, b)
     if #a ~= #b then return false end
@@ -587,12 +747,108 @@ local function wants_force(t)
     return needs_force(t) and (t == cur() or style_equal(t, cur()))
 end
 
+--------------------------------------------------------------------
+-- v1.0.9 内封定位 ASS 的缩放/字号通道
+--
+-- mpv 的 sub-ass-extradata 给出 ASS 头（[Script Info] + [V4+ Styles]），
+-- 内封轨同样可读（示例 MKV 实测：PlayResY=288，Default Fontsize=21，
+-- 另三条 style 为 14/18/11）。有了原始字号，缩放就能做「相对原样」的
+-- 精确倍率，不必猜 720p↔PlayResY 的换算。
+--------------------------------------------------------------------
+
+-- 与后面 BAR_LINE_GAP 同值；这里必须前置声明，否则Lua 词法作用域会解析成全局 nil
+local ASS_LINE_GAP = 1.2
+
+-- 解析 ASS 头：PlayResY + 各 Style 的 Fontsize。
+-- base_fontsize 优先取名为 Default 的样式（主对白），否则取最大值。
+local function ass_style_info()
+    local extra = mp.get_property('sub-ass-extradata')
+    if type(extra) ~= 'string' or extra == '' then return nil end
+    local playres_y, default_fs, max_fs
+    for line in extra:gmatch('[^\r\n]+') do
+        local y = line:match('^%s*PlayResY%s*:%s*(%d+%.?%d*)')
+        if y then playres_y = tonumber(y) end
+        if line:match('^%s*Style%s*:') then
+            local name, fs = line:match(
+                '^%s*Style%s*:%s*([^,]-),%s*[^,]-,%s*(%d+%.?%d*)')
+            local n = fs and tonumber(fs) or nil
+            if n and n > 0 then
+                if not max_fs or n > max_fs then max_fs = n end
+                if name and name:lower() == 'default' then default_fs = n end
+            end
+        end
+    end
+    if not (default_fs or max_fs) then return nil end
+    return {playres_y = (playres_y and playres_y > 0) and playres_y or nil,
+            base_fontsize = default_fs or max_fs,
+            max_fontsize = max_fs}
+end
+
+-- 通道激活条件：内封 + ASS + 能读到样式表 + 运行时开关开。
+-- 外挂字幕 / SRT / 图形字幕一律沿用原来的 sub-scale / sub-font-size 通道；
+-- 单测桩不注入 sub-ass-extradata，故旧用例行为完全不变。
+local function ass_channel_active()
+    if not runtime.ass_fontsize then return false end
+    if track_info() ~= 'ass' then return false end
+    if track_origin() ~= '内封' then return false end
+    return ass_style_info() ~= nil
+end
+
+-- 目标轨真正应生效的缩放倍率（黑边贴合 > 双语布局 > 用户设定）
+local function effective_scale()
+    if barfit_active() then return barfit.scale end
+    local l = layout and layout[is_sec() and 'sec' or 'main']
+    if l and l.scale ~= nil then return l.scale end
+    return cur().scale
+end
+
+-- 折算出要写进 ASS 样式表的 Fontsize；返回 nil 表示**不写**（保留原样）。
+--   size_factor：用户字号相对 mpv 基线字号的变化倍率（只对普通对白生效的那一份）
+--   effective_scale：整体缩放 / 黑边限缩
+-- force 模式下两条通道互不干扰（真机实测）；scale 模式下 apply_all 会把
+-- sub-scale 归 1，避免普通对白被「sub-scale × Fontsize」双叠加。
+local function ass_fontsize_override(target_style)
+    if not ass_channel_active() then return nil end
+    local sc = effective_scale()
+    local base_px = baseline.size or o.size_baseline
+    local size_factor = 1
+    if target_style.size and base_px > 0 then
+        size_factor = target_style.size / base_px
+    end
+    -- 快路径：字号=原样且缩放=×1，不写 Fontsize
+    if not target_style.size and math.abs(sc - 1) < 0.001 then return nil end
+    local info = ass_style_info()
+    local base_units = info and info.base_fontsize
+        or (o.size_baseline * (o.ass_fontsize_ratio or 0.5625))
+    local factor = clamp(size_factor * sc, 0.02, 20)
+    -- 用户把字号点回基线、缩放点回 ×1（或黑边贴合刚被关掉）时，算出来正好
+    -- 等于 ASS 原始字号。此时写 `Fontsize=20` 是无效覆盖，还会把多 style 的
+    -- 原始字号层级压平成单一值 —— 必须清掉，让样式表回到原生状态。
+    if math.abs(factor - 1) < 0.001 then return nil end
+    return string.format('Fontsize=%g', base_units * factor)
+end
+
+-- 黑边贴合时按 ASS 原始字号估算「缩放=×1」时的字幕盒物理高度。
+-- 示例 MKV：21 × 1.2 × (2160/288) = 189px，黑条 120px ⇒ 自动限缩到 ~0.57。
+local function ass_unit_px(frame_h)
+    if not ass_channel_active() then return nil end
+    local info = ass_style_info()
+    if not info or not info.playres_y or not info.base_fontsize then return nil end
+    local px = info.max_fontsize * ASS_LINE_GAP * (frame_h / info.playres_y)
+    return px > 0 and px or nil
+end
+
 -- 写共享样式通道（font/size/bold + 列表）。target_style 为生效的那套样式
 local function apply_style_channel(target_style)
     if target_style.font or baseline.font then
         mp.set_property_native('sub-font', target_style.font or baseline.font)
     end
-    mp.set_property_native('sub-font-size', target_style.size or baseline.size)
+    -- v1.0.9：内封定位 ASS 通道激活时 sub-scale 被归 1（见 apply_all），
+    -- 普通对白的缩放改由这里并入 sub-font-size；\pos 定位字幕则由下面的
+    -- Fontsize 承担，两条通道各自恰好拿到同一个倍率，不会双叠加。
+    mp.set_property_native('sub-font-size',
+        (target_style.size or baseline.size) *
+        (ass_channel_active() and effective_scale() or 1))
     -- 主颜色：sub-color（force 的 COLORS 位）
     if target_style.color ~= nil then
         mp.set_property_native('sub-color', target_style.color)
@@ -617,10 +873,32 @@ local function apply_style_channel(target_style)
         mp.set_property_native('sub-bold', baseline.bold)
     end
 
-    -- 列表只放 Bold：FontName 若走列表会作用于**所有**字幕轨（解码器级共享），
-    -- 无法分轨；字体/字号一律走 force + sub-font/sub-font-size（见文件头说明）。
+    -- 列表通道（解码器级共享，主/次轨同变）：
+    --   Bold 一直走这里（force 的 flags 不含 ATTRIBUTES 位）；
+    --   v1.0.6 起，开启全样式覆盖时再写 FontName / PrimaryColour / OutlineColour。
+    -- force 的选择性覆盖只作用于 !explicit 事件，带 \pos 的顶部字幕 / signs 完全不受影响
+    -- （真机实测：Netflix 内封 ASS 主色 #8B8B8B，force 前后差分像素一字不差）。
+    -- 列表改写的是 track->styles 本身，所有引用该 style 的事件（含 \pos）都会拿到新值。
+    -- 只在字段非 nil 时写入 ⇒ 「恢复字幕原样」自动清掉这些键，ASS 原色恢复。
     local want = {}
     if target_style.bold ~= nil then want[#want + 1] = 'Bold=' .. (target_style.bold and '1' or '0') end
+    -- v1.0.9：内封定位 ASS 的唯一缩放/字号通道。独立于 override_all ——
+    -- 后者只管颜色/字体是否覆盖 \pos 字幕，前者管字号，关掉颜色覆盖时
+    -- 用户依然要能放大定位字幕。
+    local fontsize_override = ass_fontsize_override(target_style)
+    if fontsize_override then want[#want + 1] = fontsize_override end
+    if runtime.override_all then
+        if target_style.font then
+            want[#want + 1] = 'FontName=' .. target_style.font
+        end
+        local primary = hex_to_ass_color(target_style.color)
+        if primary then want[#want + 1] = 'PrimaryColour=' .. primary end
+        local outline_col = hex_to_ass_color(target_style.outline_color)
+        if outline_col then want[#want + 1] = 'OutlineColour=' .. outline_col end
+        -- Fontsize 由上面的 ass_fontsize_override() 单独负责（需要读
+        -- sub-ass-extradata 里的原始字号与 PlayResY，不能拿 720p px 直接写）。
+        -- Outline 仍是脚本像素单位，只在 force + sub-outline-size 通道作用于普通对白。
+    end
 
     local cur_list = mp.get_property_native('sub-ass-style-overrides') or {}
     local kept = {}
@@ -743,6 +1021,9 @@ end
 --   dance=false：文件加载阶段/pos、scale 变化——pos、scale 实测即时生效，
 --     不碰 override，无闪烁。
 local function apply_all(dance, rebuild)
+    -- 对外 API：状态快照在任何属性回写之前发布（快照读的是 state 表，
+    -- 不依赖 mpv 属性是否写完），保证订阅者拿到的是本次动作的意图。
+    if publish_api_state then pcall(publish_api_state) end
     -- 位置：**只回写本脚本拥有（用户通过菜单设过）的轨**。
     -- 未拥有的保持 mpv 当前值（配置/默认），脚本不越权覆盖。
     -- 缩放同理（两轨独立、即时生效）。
@@ -750,19 +1031,31 @@ local function apply_all(dance, rebuild)
     -- 用户手动设位置/缩放即 layout=nil，回到下面的「拥有才回写」。
     local function apply_track_layout(key, pos_prop_, scale_prop_)
         local st = state[key]
+        -- v1.0.9：内封定位 ASS 通道激活时，缩放全部折进 ASS Fontsize。
+        -- 两轨 sub-scale 都归 1，避免 scale 模式（override != force）下
+        -- 普通对白被「sub-scale × Fontsize」双叠加（真机 16px → 37px）。
+        local neutral = ass_channel_active() and 1 or nil
+        if barfit_active() then
+            -- 黑边贴合优先：主轨贴下黑边(100)、次轨贴上黑边(0)，两轨同一限缩倍率
+            write_prop(pos_prop_, key == 'main' and PUSH_MAX or POS_MIN)
+            write_prop(scale_prop_, neutral or barfit.scale)
+            return
+        end
         local l = layout and layout[key]
         if l then
             write_prop(pos_prop_, l.pos)
-            write_prop(scale_prop_, l.scale ~= nil and l.scale or st.scale)
+            write_prop(scale_prop_, neutral or (l.scale ~= nil and l.scale or st.scale))
         else
             if st.pos_owned then write_prop(pos_prop_, st.pos) end
-            write_prop(scale_prop_, st.scale)
+            write_prop(scale_prop_, neutral or st.scale)
         end
     end
     apply_track_layout('main', 'sub-pos', 'sub-scale')
     if has_secondary_track() then
         apply_track_layout('sec', 'secondary-sub-pos', 'secondary-sub-scale')
     end
+    -- 共享属性：把字幕盒居中在黑条内（上下对称，故一条 margin 同时服务两轨）
+    if barfit_active() then write_prop('sub-margin-y', barfit.margin_y) end
 
     -- 共享样式通道 = 目标轨的样式
     apply_style_channel(cur())
@@ -805,11 +1098,137 @@ local function apply_all(dance, rebuild)
 end
 
 --------------------------------------------------------------------
+-- 上下黑边贴合（v1.0.7）
+--
+-- 为什么必须自己检测：示例视频 Dead-End...mkv 是 3840×2160，上下各 120px
+-- 是**编码进画面**的黑条，osd-dimensions.mt/mb 实测为 0，mpv 的
+-- sub-use-margins / sub-ass-force-margins 完全帮不上忙。只有读视频帧像素
+-- 才知道黑条在哪。窗口 letterbox 黑边由 mpv 原生 margins 机制负责，这里不碰。
+--
+-- 怎么把字幕放进黑条（本机 2160p 实测标定）：
+--   sub-pos=100 + sub-margin-y=34 ⇒ 字幕盒 y1858..2038，黑条从 y2040 开始，
+--   字幕正好整条压在画面上。实测字幕盒高 181px ≈ sub-font-size(50) × 1.2
+--   × (2160/720)=180px，因此可以用 sub-font-size 估算盒高而不必再截一次图。
+--   ① scale = 黑条高×(1-pad) / 估算盒高 ⇒ 把字幕缩到黑条放得下；
+--   ② sub-margin-y = (黑条高 - 缩后盒高)/2 / (帧高/720) ⇒ 居中在黑条内。
+--   sub-margin-y 是共享属性且对上下对称生效，所以主轨 100 / 次轨 0 会分别
+--   居中在下/上黑条内，互不遮挡画面内容。
+-- ⚠ 带 \pos 的 explicit ASS 事件对 sub-pos/sub-scale 豁免，保持原位（mpv 硬边界）。
+--------------------------------------------------------------------
+
+local BAR_LUMA_R, BAR_LUMA_G, BAR_LUMA_B = 0.299, 0.587, 0.114
+local BAR_LINE_GAP = 1.2
+
+-- 逐行平均亮度 → 上下连续暗行厚度（占帧高比例）。
+-- 守卫：中央区域必须明显亮于阈值，否则整帧暗场/淡入淡出会被误判成「全是黑边」。
+local function detect_bars(img, dark_luma, step)
+    if type(img) ~= 'table' or not img.data or not img.w or not img.h or img.h < 16 then
+        return nil
+    end
+    local w, h, stride, data = img.w, img.h, img.stride or (img.w * 4), img.data
+    step = math.max(1, math.floor(step or 8))
+    local luma = {}
+    for y = 0, h - 1 do
+        local sum, n = 0, 0
+        local base = y * stride + 1
+        for x = 0, w - 1, step do
+            local i = base + x * 4
+            local bb, gg, rr = data:byte(i, i + 2)
+            sum = sum + rr * BAR_LUMA_R + gg * BAR_LUMA_G + bb * BAR_LUMA_B
+            n = n + 1
+        end
+        luma[y + 1] = n > 0 and (sum / n) or 0
+    end
+    local mid_sum, mid_n = 0, 0
+    for y = math.floor(h * 0.4), math.ceil(h * 0.6) do
+        mid_sum = mid_sum + luma[y + 1]; mid_n = mid_n + 1
+    end
+    if mid_n == 0 or mid_sum / mid_n < dark_luma * 2 then return nil end
+    local top, bottom = 0, 0
+    for y = 1, math.floor(h * 0.45) do
+        if luma[y] <= dark_luma then top = y else break end
+    end
+    for y = h, math.ceil(h * 0.55), -1 do
+        if luma[y] <= dark_luma then bottom = bottom + 1 else break end
+    end
+    return top / h, bottom / h
+end
+
+-- 由黑条比例算 per-file 覆盖层。纯计算，便于单测。
+-- ass_unit_px（v1.0.9）：内封定位 ASS 时按原始 Fontsize/PlayResY 算出的
+-- 「缩放=×1」字幕盒物理高度；缺省仍走 720p 等效估算。
+local function compute_barfit(top_frac, bottom_frac, frame_h, font_size, unit_px)
+    local min_bar = math.max(0, o.letterbox_min_bar or 0.03)
+    if top_frac < min_bar or bottom_frac < min_bar then return nil end
+    local pad = math.max(0, math.min(0.5, o.letterbox_pad or 0.10))
+    -- 上下黑条不等高时取较薄的一侧，保证两条字幕都放得下
+    local bar_frac = math.min(top_frac, bottom_frac)
+    local usable_px = frame_h * bar_frac * (1 - pad)
+    local unit = (unit_px and unit_px > 0) and unit_px
+        or ((font_size > 0 and font_size or 38) * BAR_LINE_GAP * (frame_h / 720))
+    if unit <= 0 then return nil end
+    local scale = clamp(usable_px / unit, SCALE_MIN, SCALE_MAX)
+    if scale > 1 then scale = 1 end   -- 黑条够宽时不放大字幕，只居中
+    local box_px = unit * scale
+    -- ⚠ sub-margin-y 是 INT 属性：真机实测 mp.set_property_native 传 2.4 会被
+    --   mpv 静默忽略（属性仍停在命令行值 80），传整数才生效。必须四舍五入。
+    local margin_y = math.max(0, math.floor(
+        (frame_h * bar_frac - box_px) / 2 / (frame_h / 720) + 0.5))
+    return {top = top_frac, bottom = bottom_frac, scale = scale, margin_y = margin_y}
+end
+
+-- 关闭贴合：还原共享的 sub-margin-y（它不在 reset-on-next-file 里，会跨文件泄漏）。
+disable_barfit = function()
+    barfit = nil
+    if mp.get_property_number('sub-margin-y', -1) ~= baseline.margin_y then
+        write_prop('sub-margin-y', baseline.margin_y)
+        -- sub-margin-y 无 UPDATE flag：不触发 configure_ass 的话，关开关/手动让位
+        -- 后画面上的字幕仍停在黑边里，要等 seek 才跳回默认位置。
+        nudge_reconfigure()
+    end
+end
+
+-- 检测一次并应用。检测依赖画面已渲染，故由 file-loaded 延迟触发 / 菜单手动触发。
+refresh_barfit = function()
+    if not runtime.bar_fit then
+        disable_barfit()
+        apply_all(false)
+        return nil
+    end
+    local ok, img = pcall(mp.command_native, {'screenshot-raw', 'video'})
+    if not ok or type(img) ~= 'table' then return nil end
+    local top, bottom = detect_bars(img, o.letterbox_dark_luma or 20,
+        o.letterbox_sample_step or 8)
+    local fit = top and compute_barfit(top, bottom, img.h,
+        baseline.size or mp.get_property_number('sub-font-size', 38),
+        ass_unit_px(img.h))
+    if not fit then
+        if barfit then
+            disable_barfit()
+            apply_all(false)
+        end
+        return nil
+    end
+    barfit = fit
+    apply_all(false)
+    nudge_reconfigure()   -- sub-margin-y / sub-scale 无 UPDATE flag，需重跑 configure_ass
+    -- OSD 微扰会清掉左上角检测报告，补回来（沿用 flash_tl 已设好的 left/top 对齐）
+    if last_report_text then
+        mp.commandv('show-text', last_report_text, o.report_ms or 6000)
+    end
+    return fit
+end
+
+--------------------------------------------------------------------
 -- 设置入口（全部作用于当前目标轨）
 --------------------------------------------------------------------
 
 local function flash(text)
+    if publish_api_state then pcall(publish_api_state) end
     mp.commandv('show-text', text, 3000)
+    -- 菜单开启了 keep_open：改完样式立即把 active/hint 刷新回菜单，
+    -- 否则用户看不到「当前选中项」变化，会以为点击没生效。
+    if refresh_menu then refresh_menu() end
 end
 
 local function describe()
@@ -844,6 +1263,7 @@ end
 
 local function set_pos(v, quiet)
     layout = nil   -- 用户手动设位置 ⇒ 关闭本次文件的 CN+JP 自动布局
+    disable_barfit()  -- 用户手动调位置即让位，黑边贴合不再回写
     cur().pos = clamp(v, POS_MIN, POS_MAX)
     cur().pos_owned = true                       -- 用户显式设定 ⇒ 取得归属权
     local pushed = push_other_away(cur().pos)    -- 另一轨自动让位，避免重叠
@@ -856,16 +1276,32 @@ local function set_pos(v, quiet)
             text = text .. string.format('（%s已避让至 %d%%）',
                 is_sec() and '主字幕' or '次字幕', pushed)
         end
+        -- 用户已确认「保留定位，微调仅普通字幕」：内封 \pos 字幕不跟着动，
+        -- 必须明说，否则又会被当成「点击没反应」。
+        if ass_channel_active() then
+            text = text .. ' ⚠ 内封 \\pos 定位字幕保持原位（请用字号/缩放调整）'
+        end
         flash(w and (text .. ' ⚠ ' .. w) or text)
     end
 end
 
 local function set_scale(v, quiet)
     layout = nil   -- 用户手动设缩放 ⇒ 关闭本次文件的 CN+JP 自动布局
+    disable_barfit()  -- 用户手动调缩放即让位，黑边贴合不再回写
     cur().scale = clamp(v, SCALE_MIN, SCALE_MAX)
-    apply_all(false)
+    -- v1.0.9：内封定位 ASS 的缩放靠 sub-ass-style-overrides/Fontsize 与
+    -- sub-font-size 落地，两者都没有 UPDATE flag，必须推动 configure_ass 重跑。
+    if ass_channel_active() then apply_all(true, true) else apply_all(false) end
     save_state()
-    if not quiet then flash(describe()) end
+    if not quiet then
+        local text = describe()
+        if ass_channel_active() then
+            local ov = ass_fontsize_override(cur())
+            text = text .. (ov and ('（定位字幕 ' .. ov .. '）')
+                or '（定位字幕保持原始字号）')
+        end
+        flash(text)
+    end
 end
 
 local function size_label(v)
@@ -1028,6 +1464,8 @@ local function set_style_preset(name, quiet)
 end
 
 local function reset_style()
+    layout = nil
+    disable_barfit()   -- 恢复默认也要还原 sub-margin-y，别把黑边贴合带到下一个文件
     state.main = new_track(o.pos_default)
     state.sec = new_track(o.sec_pos_default)
     -- 「恢复默认」是用户显式动作 ⇒ 位置按 mpv 默认值回写并取得归属权
@@ -1400,6 +1838,29 @@ end
 local preset = preset_from_options()
 local preset_factory = preset_from_options()
 
+-- 前向声明：全轨枚举 / 标准黑白判定的实现放在后面的「样式检测」区，
+-- 但 needs_preset（预设区）要先引用；Lua 局部变量作用域从声明之后才开始，
+-- 不占位会解析成全局 nil（踩过：attempt to call global 'current_internal_id'）。
+local current_internal_id, is_standard_black_white
+
+-- 判定「需要转成黑白样式」：
+--   only_colored=false → 一律套用；
+--   彩色字幕 → 套用；
+--   灰色字幕（饱和度为 0 但既不是白也不是黑，如 Netflix 内封 ASS 的 #8B8B8B）→ 也套用；
+--   v1.0.8：内封字幕轨除「标准白字黑边」外一律套用 —— 不再依赖单一颜色判据，
+--   任何没落进「彩色 / 灰阶」窄区间的内封配色也不会被漏掉。
+--   外挂字幕仍走上面的颜色判据（其样式来自文件解析，用户往往有意保留配色）。
+local function needs_preset(info)
+    if not preset.only_colored then return true end
+    if info.colored then return true end
+    if runtime.include_gray and is_gray_hex(info.color) then return true end
+    if o.preset_all_internal and current_internal_id()
+        and not is_standard_black_white(info) then
+        return true
+    end
+    return false
+end
+
 local function load_preset()
     local path = mp.command_native({'expand-path', PRESET_PATH})
     if not path then return end
@@ -1555,6 +2016,47 @@ is_colored_hex = function(hex)
     return (math.max(rr, gg, bb) - math.min(rr, gg, bb)) >= o.colored_threshold
 end
 
+--------------------------------------------------------------------
+-- v1.0.8「所有的内封字幕都要被检查」
+--   track-list 里 type='sub' 且 external=false 的轨全部纳入检查范围；
+--   当前目标轨若是内封轨，也返回其 id，用于按轨记录「已检查」状态。
+--------------------------------------------------------------------
+local function internal_subtitle_tracks()
+    local out = {}
+    local tl = mp.get_property_native('track-list') or {}
+    for _, t in ipairs(tl) do
+        if t.type == 'sub' and not t.external and t.id ~= nil then
+            out[#out + 1] = t
+        end
+    end
+    table.sort(out, function(a, b) return (a.id or 0) < (b.id or 0) end)
+    return out
+end
+
+current_internal_id = function()
+    local want = is_sec() and mp.get_property_number('secondary-sid', -1)
+        or mp.get_property_number('sid', -1)
+    if not want or want < 1 then return nil end
+    for _, t in ipairs(internal_subtitle_tracks()) do
+        if t.id == want then return want end
+    end
+    return nil
+end
+
+-- 「已经是标准白字黑边」是唯一保留原样的内封例外：
+--   非彩色 + 主色接近纯白（各通道 ≥235）。灰色 #8B8B8B、浅灰 #EAEAEA、
+--   任意带色调的内封字幕都不属于此例外。
+--   ⚠ 不查描边色：像素采样把「少量高饱和抗锯齿 fringe」也会记成 accent 并派生
+--     成 outline_color（如白字 + 0.33% 粉边），拿它判「非黑描边」会把标准白字
+--     误转成预设；彩色判据（info.colored）已经负责识别真彩描边，这里不重复判断。
+is_standard_black_white = function(info)
+    if not info or info.colored then return false end
+    local rr, gg, bb = tostring(info.color or ''):match('^#(%x%x)(%x%x)(%x%x)$')
+    if not rr then return false end
+    local r2, g2, b2 = tonumber(rr, 16), tonumber(gg, 16), tonumber(bb, 16)
+    return math.min(r2, g2, b2) >= 235
+end
+
 -- 综合检测：优先解析外挂文件（精确），否则像素采样（内封可用）
 local function inspect_style()
     local info = {source = nil}
@@ -1657,10 +2159,22 @@ local function preset_report(info, applied, skipped_dual)
         extra[#extra + 1] = '内封字体 无'
     end
     if #extra > 0 then lines[#lines + 1] = table.concat(extra, ' · ') end
-    lines[#lines + 1] = applied and ('已套用预设样式（' .. preset.color .. ' / 描边 '
-        .. preset.outline_color .. '）')
-        or (skipped_dual and '双语字幕（双轨），保持原样不改颜色'
-        or (info.colored and '彩色字幕，但预设未启用' or '非彩色字幕，保持原样'))
+    local reason
+    if skipped_dual then
+        reason = '双语字幕（双轨），保持原样不改颜色'
+    elseif not preset.enabled then
+        reason = '载入时自动套用未开启，保持原样'
+    elseif info.colored then
+        reason = '彩色字幕，但预设条件未通过'
+    elseif is_gray_hex(info.color) then
+        reason = runtime.include_gray and '灰色字幕，但预设条件未通过'
+            or '灰色字幕（灰色识别已关闭），保持原样'
+    else
+        -- 保留「非彩色字幕，保持原样」措辞（历届 E2E/单测的判据），补注说明标准白字黑边
+        reason = '非彩色字幕，保持原样（标准白字黑边）'
+    end
+    lines[#lines + 1] = applied and ('已套用预设样式（黑白：' .. preset.color .. ' / 描边 '
+        .. preset.outline_color .. '）') or reason
     return table.concat(lines, '\n')
 end
 
@@ -1692,13 +2206,43 @@ run_inspect = function(gen, allow_retry)
     end
     inspect_done = true
     inspect_attempts = 0
+    -- v1.0.8：按轨记账。切换 sid 后若该内封轨尚未检查过，观察器会重新放行检测。
+    local internal_id = current_internal_id()
+    if internal_id then inspected_internal[internal_id] = true end
     local applied, skipped_dual = false, false
     if has_secondary_track() and preset.skip_dual then
         skipped_dual = true
-    elseif preset.enabled and (not preset.only_colored or info.colored) then
+    elseif preset.enabled and needs_preset(info) then
         applied = apply_preset(true, true)
     end
-    flash_tl(preset_report(info, applied, skipped_dual), o.report_ms or 6000)
+    local report = preset_report(info, applied, skipped_dual)
+    if o.inspect_all_internal then
+        local tracks = internal_subtitle_tracks()
+        if #tracks > 0 then
+            local checked, pending = 0, {}
+            for _, t in ipairs(tracks) do
+                if inspected_internal[t.id] then checked = checked + 1
+                else pending[#pending + 1] = tostring(t.id) end
+            end
+            report = report .. string.format('\n内封字幕轨：共 %d 条，已检查 %d 条（当前 %s）',
+                #tracks, checked, internal_id and tostring(internal_id) or '外挂')
+            if #pending > 0 then
+                -- 真机实测示例 MKV 有 42 条内封字幕轨，全列会把左上角 OSD 撑出屏幕。
+                -- 最多列前 6 条，其余用「等 N 条」概括。
+                local shown = {}
+                for i = 1, math.min(#pending, 6) do shown[i] = pending[i] end
+                local more = #pending > 6 and (' 等 ' .. #pending .. ' 条') or ''
+                report = report .. '，待检查 ' .. table.concat(shown, '/') .. more
+            end
+        end
+    end
+    last_report_text = report
+    if report_clear_timer and report_clear_timer.kill then report_clear_timer:kill() end
+    report_clear_timer = mp.add_timeout((o.report_ms or 6000) / 1000, function()
+        last_report_text = nil
+        report_clear_timer = nil
+    end)
+    flash_tl(report, o.report_ms or 6000)
 end
 
 --------------------------------------------------------------------
@@ -1773,7 +2317,10 @@ local function build_items()
     items[#items + 1] = section('整体缩放（相对字幕原始大小）')
     for _, p in ipairs(SCALE_PRESETS) do
         items[#items + 1] = {
-            title = p.title, hint = '对白幕缩放，不含特效幕', icon = 'format_size',
+            title = p.title,
+            hint = ass_channel_active() and '内封 \\pos 定位字幕一并缩放（ASS Fontsize）'
+                or '对白幕缩放，不含特效幕',
+            icon = 'format_size',
             value = 'script-message-to uosc_subtitle_style scale ' .. string.format('%g', p.scale),
             active = (math.abs(cur().scale - p.scale) < 0.001),
         }
@@ -1787,8 +2334,8 @@ local function build_items()
     }
     for _, name in ipairs(FONT_PRESETS) do
         items[#items + 1] = {
-            title = name, hint = '只对目标轨生效（force）', icon = 'text_fields',
-            value = 'script-message-to uosc_subtitle_style font ' .. name,
+            title = name, hint = '含 \\pos 的字幕一并生效', icon = 'text_fields',
+            value = menu_cmd('script-message-to', 'uosc_subtitle_style', 'font', name),
             active = (cur().font == name),
         }
     end
@@ -1811,6 +2358,32 @@ local function build_items()
             active = (cur().size ~= nil and math.abs(cur().size - p.size) < 0.001),
         }
     end
+    -- v1.0.9：「整体缩放」是倍率、无法精准定位到某一字号；±1px 让用户逐次
+    -- 把自动缩小后的字幕调到合适大小。keep_open 保证连点不关菜单。
+    items[#items + 1] = section(string.format('字号微调（±%gpx，可连续点击）', o.size_step))
+    items[#items + 1] = {
+        title = string.format('字号 −%gpx', o.size_step),
+        hint = string.format('从 %s 起算；当前 %s',
+            string.format('%gpx', cur().size or baseline.size or o.size_baseline),
+            cur().size and string.format('%gpx', cur().size) or '字幕原样'),
+        icon = 'remove', keep_open = true,
+        value = 'script-message-to uosc_subtitle_style size-step '
+            .. string.format('%g', -o.size_step),
+    }
+    items[#items + 1] = {
+        title = string.format('字号 +%gpx', o.size_step),
+        hint = barfit_active() and '黑边贴合时自动存进全局预设，重启后仍是这个字号'
+            or '精确定位字幕（\\pos）同样生效',
+        icon = 'add', keep_open = true,
+        value = 'script-message-to uosc_subtitle_style size-step '
+            .. string.format('%g', o.size_step),
+    }
+    items[#items + 1] = {
+        title = string.format('当前字号：%s',
+            cur().size and string.format('%gpx', cur().size) or '字幕原样'),
+        hint = string.format('范围 %g~%gpx；上限/下限会给出提示', o.size_min, o.size_max),
+        icon = 'straighten', selectable = false, muted = true, keep_open = true,
+    }
 
     items[#items + 1] = section('粗体')
     items[#items + 1] = {
@@ -1838,8 +2411,10 @@ local function build_items()
     for _, p in ipairs(COLOR_PRESETS) do
         items[#items + 1] = {
             title = p.label .. '（' .. p.color .. '）',
-            hint = '只对目标轨生效（force）', icon = 'palette',
-            value = 'script-message-to uosc_subtitle_style color ' .. p.color,
+            hint = '含 \\pos 的字幕一并生效', icon = 'palette',
+            -- ⚠ 必须走 menu_cmd 给 #RRGGBB 加引号：mp.command 会把裸 # 当注释符，
+            -- 参数被吞掉后脚本收到空值 → 显示「恢复字幕原样」且颜色不变。
+            value = menu_cmd('script-message-to', 'uosc_subtitle_style', 'color', p.color),
             active = (cur().color ~= nil and cur().color:lower() == p.color:lower()),
         }
     end
@@ -1868,8 +2443,8 @@ local function build_items()
     for _, p in ipairs(OUTLINE_COLOR_PRESETS) do
         items[#items + 1] = {
             title = p.label .. '（' .. p.color .. '）',
-            hint = '只对目标轨生效（force）', icon = 'format_color_text',
-            value = 'script-message-to uosc_subtitle_style outline-color ' .. p.color,
+            hint = '含 \\pos 的字幕一并生效', icon = 'format_color_text',
+            value = menu_cmd('script-message-to', 'uosc_subtitle_style', 'outline-color', p.color),
             active = (cur().outline_color ~= nil
                 and cur().outline_color:lower() == p.color:lower()),
         }
@@ -1914,11 +2489,28 @@ local function build_items()
         value = 'script-message-to uosc_subtitle_style preset-save',
     }
     items[#items + 1] = {
-        title = '仅彩色字幕时套用',
-        hint = preset.only_colored and '已开启：白字字幕保持原样' or '已关闭：所有字幕都套用',
+        title = '仅彩色/灰色字幕时套用',
+        hint = preset.only_colored and '已开启：标准白字黑边字幕保持原样'
+            or '已关闭：所有字幕都套用',
         icon = preset.only_colored and 'check_box' or 'check_box_outline_blank',
         value = 'script-message-to uosc_subtitle_style preset-toggle-colored',
         active = preset.only_colored,
+    }
+    items[#items + 1] = {
+        title = '灰色字幕也自动转黑白',
+        hint = runtime.include_gray and '已开启：灰字（如 #8B8B8B）识别为需转换'
+            or '已关闭：只有彩色字幕才套用',
+        icon = runtime.include_gray and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style toggle-gray',
+        active = runtime.include_gray,
+    }
+    items[#items + 1] = {
+        title = '顶部/定位字幕一并改样式',
+        hint = runtime.override_all and '已开启：带 \\pos 的 signs 也改色改字体（主/次轨同变）'
+            or '已关闭：只改普通对白（保持分轨）',
+        icon = runtime.override_all and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style toggle-all',
+        active = runtime.override_all,
     }
     items[#items + 1] = {
         title = '双语字幕保持原样',
@@ -1946,6 +2538,37 @@ local function build_items()
     }
 
     items[#items + 1] = section('其它')
+    local bar_hint
+    if not runtime.bar_fit then
+        bar_hint = '已关闭：字幕按 mpv 默认位置显示'
+    elseif barfit then
+        bar_hint = string.format('已开启：黑边 上%.1f%% / 下%.1f%% · 限缩 ×%.2f',
+            barfit.top * 100, barfit.bottom * 100, barfit.scale)
+    else
+        bar_hint = '已开启：当前画面没检测到上下黑边'
+    end
+    items[#items + 1] = {
+        title = '上下黑边内显示字幕',
+        hint = bar_hint .. (ass_channel_active()
+            and '（内封 \\pos 字幕按 ASS 原始字号缩进黑边）'
+            or '（\\pos 定位字幕受 mpv 限制保持原位）'),
+        icon = runtime.bar_fit and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style letterbox-toggle',
+        active = runtime.bar_fit,
+    }
+    items[#items + 1] = {
+        title = '重新检测上下黑边', hint = '按当前画面重新扫描并立即贴合', icon = 'search',
+        value = 'script-message-to uosc_subtitle_style letterbox-refresh',
+    }
+    items[#items + 1] = {
+        title = '内封定位字幕可缩放/改字号',
+        hint = runtime.ass_fontsize
+            and '已开启：\\pos 字幕走 ASS Fontsize，缩放/字号/黑边限缩都生效（主次轨同变）'
+            or '已关闭：回到 mpv 原生 sub-scale（\\pos 字幕不响应缩放）',
+        icon = runtime.ass_fontsize and 'check_box' or 'check_box_outline_blank',
+        value = 'script-message-to uosc_subtitle_style ass-fontsize-toggle',
+        active = runtime.ass_fontsize,
+    }
     items[#items + 1] = {
         title = '恢复默认', hint = '主/次位置 100% · 缩放 ×1.00 · 样式全原样', icon = 'undo',
         value = 'script-message-to uosc_subtitle_style reset',
@@ -1953,12 +2576,18 @@ local function build_items()
     return items
 end
 
+-- 前向声明：refresh_menu 定义在 open_uosc_menu 之后，却要引用后面才定义的字体选择器
+local open_font_picker
+
 local function open_uosc_menu()
     local menu_props = {
         type = 'uosc_subtitle_style',
         title = '内封字幕样式',
-        footnote = '位置/缩放/字体/字号仅对编辑目标生效；粗体为共享通道（主次同变）· 修改即时保存',
+        footnote = '主色/字体/描边色含 \\pos 字幕一并生效；内封定位字幕的缩放/字号走 ASS Fontsize · 字号可 ±1px 微调并保存',
         search_style = 'on_demand',
+        -- 根级 keep_open 会被所有 item 继承（uosc Menu.lua 第 217 行），
+        -- 配合 refresh_menu 的 update-menu，点击后可连续调整并实时看到选中态。
+        keep_open = true,
         items = build_items(),
     }
     local json = utils.format_json(menu_props)
@@ -1968,8 +2597,21 @@ local function open_uosc_menu()
     mp.commandv('script-message-to', 'uosc', cmd, json)
 end
 
+-- 样式改动后刷新已打开的菜单（uosc 的 update-menu 会保留 selected_index/scroll_y/search）。
+-- 仅在本脚本的菜单处于打开态时才发消息，避免打扰其它菜单/无 uosc 的降级路径。
+refresh_menu = function()
+    local t = mp.get_property_native('user-data/uosc/menu/type')
+    if t == nil then return end
+    local name = tostring(t)
+    if name == 'uosc_subtitle_style' then
+        open_uosc_menu()
+    elseif name == 'uosc_subtitle_style_fonts' then
+        open_font_picker(false)
+    end
+end
+
 -- 本机字体选择器（懒加载枚举；中文/其他分两组；可重新扫描）
-local function open_font_picker(force_rescan)
+open_font_picker = function(force_rescan)
     local data
     if force_rescan then
         font_cache = enumerate_fonts(true)
@@ -1988,7 +2630,7 @@ local function open_font_picker(force_rescan)
         for _, name in ipairs(list) do
             items[#items + 1] = {
                 title = name, hint = hint, icon = 'text_fields',
-                value = 'script-message-to uosc_subtitle_style font ' .. name,
+                value = menu_cmd('script-message-to', 'uosc_subtitle_style', 'font', name),
                 active = (cur().font == name),
             }
         end
@@ -2018,6 +2660,7 @@ local function open_font_picker(force_rescan)
         title = '选择字体（本机）',
         footnote = '族名按 sfnt name 表解析；选中后对' .. track_name() .. '生效并自动保存',
         search_style = 'on_demand',
+        keep_open = true,
         items = items,
     }
     local json = utils.format_json(menu_props)
@@ -2073,7 +2716,17 @@ mp.register_script_message('scale', function(v)
 end)
 mp.register_script_message('nudge', function(v)
     local n = tonumber(v)
-    if n then set_pos(cur().pos + n) else msg.warn('nudge: bad number: ' .. tostring(v)) end
+    if not n then msg.warn('nudge: bad number: ' .. tostring(v)) return end
+    local before = cur().pos
+    local target = clamp(before + n, POS_MIN, POS_MAX)
+    -- 旧版把「已在 0% / 150% 边界」的点击喂给 clamp 后静默吞掉，用户看到的就是
+    -- 「下移 5% 点了没反应」。这里必须给出明确反馈。
+    if math.abs(target - before) < 0.001 then
+        flash(string.format('%s已在位置边界（%d%%，范围 %d~%d），无法继续%s',
+            track_name(), before, POS_MIN, POS_MAX, n > 0 and '下移' or '上移'))
+        return
+    end
+    set_pos(target)
 end)
 mp.register_script_message('font', function(...)
     local v = table.concat({...}, ' '):gsub('^%s+', ''):gsub('%s+$', '')
@@ -2083,6 +2736,39 @@ mp.register_script_message('size', function(v)
     if v == nil or v == 'reset' then set_size(nil) return end
     local n = tonumber(v)
     if n then set_size(n) else msg.warn('size: bad number: ' .. tostring(v)) end
+end)
+-- v1.0.9 字号 ±1px 连续微调：「字幕原样」时以 baseline.size（mpv 当前的
+-- sub-font-size，默认常为 55）起步，而不是脚本的 size_baseline=32——
+-- 否则第一次点「+1」会跳到 33px，相对真实基准反而是**缩小**。
+-- 之后每次点击都以当前值为基准，可连续点到 size_min/size_max。
+-- 黑边贴合生效时顺手写进全局预设缓存：用户嫌自动缩小后的字太小，点几下
+-- 放大即可，下一次（以及其它黑边视频）载入时预设会把这个字号还回来。
+mp.register_script_message('size-step', function(v)
+    local d = tonumber(v)
+    if not d then msg.warn('size-step: bad number: ' .. tostring(v)) return end
+    local base = cur().size or baseline.size or o.size_baseline
+    local nv = clamp(base + d, o.size_min or 12, o.size_max or 96)
+    if math.abs(nv - base) < 0.001 then
+        flash(string.format('%s字号已在边界（%gpx，范围 %g~%g）',
+            track_name(), base, o.size_min or 12, o.size_max or 96))
+        return
+    end
+    -- quiet：下面按是否写入预设缓存拼一条完整提示，避免出现两次 flash
+    set_size(nv, true)
+    local text = string.format('%s字号：%gpx（%s%g）', track_name(), nv,
+        d > 0 and '+' or '−', math.abs(d))
+    if barfit_active() and o.size_step_saves_preset then
+        preset.size = nv
+        save_preset()
+        text = text .. ' · 已存为全局预设'
+    end
+    flash(text)
+end)
+mp.register_script_message('ass-fontsize-toggle', function()
+    runtime.ass_fontsize = not runtime.ass_fontsize
+    apply_all(true, true)
+    flash(runtime.ass_fontsize and '内封定位字幕缩放/字号通道：开（\\pos 字幕可缩放）'
+        or '内封定位字幕缩放/字号通道：关（回到原生 sub-scale）')
 end)
 mp.register_script_message('bold', function(v)
     if v == 'on' or v == '1' or v == 'yes' then set_bold(true)
@@ -2095,12 +2781,18 @@ mp.register_script_message('outline', function(v)
     local n = tonumber(v)
     if n then set_outline(n) else msg.warn('outline: bad number: ' .. tostring(v)) end
 end)
+-- 兼容不带 # 的 6 位 hex：input.conf 里写 `color FFFFFF` 不会被 mpv 当注释吞掉
+local function normalize_color_arg(v)
+    v = tostring(v or ''):gsub('^%s+', ''):gsub('%s+$', '')
+    if v:match('^%x%x%x%x%x%x$') then v = '#' .. v end
+    return v
+end
 mp.register_script_message('outline-color', function(...)
-    local v = table.concat({...}, ' '):gsub('^%s+', ''):gsub('%s+$', '')
+    local v = normalize_color_arg(table.concat({...}, ' '))
     if v == '' or v == 'reset' then set_outline_color(nil) else set_outline_color(v) end
 end)
 mp.register_script_message('color', function(...)
-    local v = table.concat({...}, ' '):gsub('^%s+', ''):gsub('%s+$', '')
+    local v = normalize_color_arg(table.concat({...}, ' '))
     if v == '' or v == 'reset' then set_color(nil) else set_color(v) end
 end)
 mp.register_script_message('preset-apply', function() apply_preset(false, false) end)
@@ -2119,7 +2811,41 @@ end)
 mp.register_script_message('preset-toggle-colored', function()
     preset.only_colored = not preset.only_colored
     save_preset()
-    flash(preset.only_colored and '仅彩色字幕时套用：开' or '仅彩色字幕时套用：关')
+    flash(preset.only_colored and '仅彩色/灰色字幕时套用：开' or '仅彩色/灰色字幕时套用：关')
+end)
+mp.register_script_message('toggle-gray', function()
+    runtime.include_gray = not runtime.include_gray
+    flash(runtime.include_gray and '灰色字幕自动转黑白：开' or '灰色字幕自动转黑白：关')
+end)
+mp.register_script_message('toggle-all', function()
+    runtime.override_all = not runtime.override_all
+    -- 开关直接决定列表里有没有 PrimaryColour/FontName，必须重新应用一次
+    apply_all(true, true)
+    flash(runtime.override_all and '顶部/定位字幕一并改样式：开（主/次轨同变）'
+        or '顶部/定位字幕一并改样式：关（只改普通对白，保持分轨）')
+end)
+mp.register_script_message('letterbox-toggle', function()
+    runtime.bar_fit = not runtime.bar_fit
+    if runtime.bar_fit then
+        local fit = refresh_barfit()
+        flash(fit and string.format('上下黑边内显示字幕：开（黑边 上%.1f%% / 下%.1f%% · 限缩 ×%.2f）',
+            fit.top * 100, fit.bottom * 100, fit.scale)
+            or '上下黑边内显示字幕：开（当前画面未检测到上下黑边）')
+    else
+        disable_barfit()
+        apply_all(false)
+        flash('上下黑边内显示字幕：关（已还原默认位置与边距）')
+    end
+end)
+mp.register_script_message('letterbox-refresh', function()
+    if not runtime.bar_fit then
+        flash('上下黑边贴合未开启，请先打开开关')
+        return
+    end
+    local fit = refresh_barfit()
+    flash(fit and string.format('已贴合上下黑边（上%.1f%% / 下%.1f%% · 限缩 ×%.2f）',
+        fit.top * 100, fit.bottom * 100, fit.scale)
+        or '未检测到上下黑边，保持 mpv 默认位置')
 end)
 mp.register_script_message('preset-toggle-dual', function()
     preset.skip_dual = not preset.skip_dual
@@ -2178,6 +2904,15 @@ mp.observe_property('secondary-sub-scale', 'number',
 -- inspect_armed：首检(inspect_delay)跑过才触发，避免对白刚渲染就提前检测、抢在 inspect_delay
 -- 之前（守住「先看到原字幕、再转黑白」的时序）。inspect_done：检测成功后不再随每句对白重跑。
 mp.observe_property('sub-text', 'string', function(_, val)
+    -- v1.0.9：file-loaded 当刻 demuxer 可能还没填好 sub-ass-extradata，
+    -- 首个字幕包到达后补一次应用，让缩放/字号真正折进 Fontsize（只补一次）。
+    if ass_pending and type(val) == 'string' and val ~= ''
+        and ass_channel_active() then
+        ass_pending = false
+        apply_all(false)
+        nudge_reconfigure()
+        if runtime.bar_fit and barfit then refresh_barfit() end
+    end
     if inspect_done or not inspect_armed then return end
     local is_empty = not (type(val) == 'string' and val ~= '')
     local new_segment = (not is_empty) and sub_text_was_empty
@@ -2193,8 +2928,13 @@ mp.observe_property('sub-text', 'string', function(_, val)
 end)
 
 -- end-file 期间 mpv 会按 reset-on-next-file 重置 sub-pos/sub-scale，
--- 那不是用户意图 ⇒ 打开窗口期禁止采纳，file-loaded 应用完再关闭
-mp.register_event('end-file', function() in_reset_window = true end)
+-- 那不是用户意图 ⇒ 打开窗口期禁止采纳，file-loaded 应用完再关闭。
+-- sub-margin-y 不在该重置列表里，必须在这里显式还原，否则黑边贴合会跨文件泄漏。
+mp.register_event('end-file', function()
+    in_reset_window = true
+    barfit_gen = barfit_gen + 1
+    disable_barfit()
+end)
 
 -- 启动即应用一次：让 style-overrides 列表在任何字幕轨初始化**之前**就位
 -- （该列表只在解码器 init 时读取）
@@ -2213,16 +2953,51 @@ mp.register_event('file-loaded', function()
     -- 与有界重试兜底，直到检出或超过 inspect_retries 次。
     inspect_gen = inspect_gen + 1
     inspect_done = false
+    inspected_internal = {}     -- v1.0.8：新文件重置逐轨检查账本
     inspect_attempts = 0
     inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
     sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
     inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
+    ass_pending = runtime.ass_fontsize  -- v1.0.9：等 sub-ass-extradata 就绪后补应用
     local gen = inspect_gen
     mp.add_timeout(o.inspect_delay or 1.2, function()
         inspect_armed = true
         run_inspect(gen)
     end)
+    -- 黑边检测在样式报告之后跑：报告显示 6s，refresh_barfit 内部会在
+    -- OSD 微扰重绘后把报告补回来（见 last_report_text）。
+    barfit_gen = barfit_gen + 1
+    local bgen = barfit_gen
+    mp.add_timeout((o.inspect_delay or 1.2) + (o.letterbox_delay or 0.6), function()
+        if bgen ~= barfit_gen then return end
+        if runtime.bar_fit then refresh_barfit() end
+    end)
 end)
+-- v1.0.8「所有的内封字幕都要被检查」：
+--   旧逻辑一个文件只检测一次（inspect_done=true 后不再重检），文件里其它内封轨
+--   （简体/繁体/英文/注释 signs 轨）用户切换过去时永远不会被检查、也不会套用样式。
+--   这里按轨放行：切到尚未检查过的内封轨时重置一次性守卫，重新跑检测。
+--   已检查过的轨直接跳过，避免来回切轨反复截图；inspect_armed 防止抢在首检之前；
+--   INSPECT_TOTAL_CAP 仍是本文件的总尝试硬上限。
+local function reinspect_internal_track()
+    if not o.inspect_all_internal or not inspect_armed then return end
+    local id = current_internal_id()
+    if not id or inspected_internal[id] then return end
+    if inspect_total >= INSPECT_TOTAL_CAP then return end
+    inspect_done = false
+    inspect_attempts = 0
+    sub_text_was_empty = true
+    -- 内封像素采样要求「还没被我们的 force 白字覆盖」：切到新轨前先撤掉上一条轨
+    -- 的自动预设（只清 auto=true，用户手动设的样式不动），否则 inspect_style
+    -- 会因 wants_force 直接放弃采样，新轨看起来「检查过了」其实什么都没采到。
+    clear_auto_style(state.main)
+    clear_auto_style(state.sec)
+    apply_all(false)
+    mp.add_timeout(0.1, function() run_inspect() end)
+end
+mp.observe_property('sid', 'number', function() reinspect_internal_track() end)
+mp.observe_property('secondary-sid', 'number', function() reinspect_internal_track() end)
+
 -- playback-restart 覆盖 seek/reload 等造成的重载
 mp.register_event('playback-restart', function() apply_all(false) end)
 
@@ -2244,3 +3019,154 @@ end)
 
 msg.info(string.format('sub-style loaded (target=%s pos=%d scale=%.2f persist=%s) %s',
     state.target, state.main.pos, state.main.scale, tostring(o.persist), style_desc()))
+
+--------------------------------------------------------------------
+-- 对外 API 实现（只读快照 + 白名单动作转发）
+-- 完整契约、字段表、调用示例见 docs/api-uosc-subtitle-style.md。
+--------------------------------------------------------------------
+
+-- 可安全由外部脚本触发的既有入口。刻意不包含 api / uosc-version，
+-- 避免外部脚本递归进入 API 通道或伪造 uosc 可用性。
+local API_CALLS = {
+    ['open-menu'] = true, ['cycle'] = true, ['target'] = true,
+    ['pos'] = true, ['scale'] = true, ['nudge'] = true,
+    ['font'] = true, ['size'] = true, ['size-step'] = true,
+    ['bold'] = true, ['outline'] = true, ['outline-color'] = true,
+    ['color'] = true, ['preset-apply'] = true, ['preset-save'] = true,
+    ['preset-reset'] = true, ['preset-toggle-colored'] = true,
+    ['preset-toggle-dual'] = true, ['preset-toggle-enabled'] = true,
+    ['toggle-gray'] = true, ['toggle-all'] = true,
+    ['letterbox-toggle'] = true, ['letterbox-refresh'] = true,
+    ['ass-fontsize-toggle'] = true, ['inspect'] = true,
+    ['style-preset'] = true, ['reset'] = true, ['fix-override'] = true,
+}
+
+local function api_snapshot()
+    local function track(k)
+        local s = state[k]
+        return {pos = s.pos, scale = s.scale, size = s.size,
+                font = s.font, bold = s.bold, color = s.color,
+                outline = s.outline, outline_color = s.outline_color,
+                pos_owned = s.pos_owned and true or false,
+                auto = s.auto and true or false}
+    end
+    local bf
+    if barfit then
+        bf = {top = barfit.top, bottom = barfit.bottom,
+              scale = barfit.scale, margin_y = barfit.margin_y}
+    end
+    return {
+        api_version = API_VERSION,
+        script_name = API_PREFIX,
+        target = state.target,
+        main = track('main'), sec = track('sec'),
+        barfit = bf, barfit_active = barfit_active(),
+        ass_fontsize_active = ass_channel_active(),
+        runtime = {override_all = runtime.override_all,
+                   include_gray = runtime.include_gray,
+                   bar_fit = runtime.bar_fit,
+                   ass_fontsize = runtime.ass_fontsize},
+        preset = {enabled = preset.enabled, only_colored = preset.only_colored,
+                  skip_dual = preset.skip_dual, color = preset.color,
+                  outline_color = preset.outline_color,
+                  outline = preset.outline, font = preset.font,
+                  size = preset.size, bold = preset.bold},
+    }
+end
+
+local function api_get(snap, key)
+    local node = snap
+    for part in tostring(key or ''):gmatch('[^%.]+') do
+        if type(node) ~= 'table' then return nil end
+        node = node[part]
+    end
+    return node
+end
+
+local function valid_token(s)
+    return type(s) == 'string' and s ~= '' and #s <= 128
+        and s:match('^[%w_%.%-]+$') ~= nil
+end
+
+local function api_reply(reply_to, request_id, payload)
+    local ok, json = pcall(utils.format_json, payload)
+    if not ok then
+        json = '{"ok":false,"error":"encode_failed"}'
+    end
+    -- command_native 数组形式不经命令字符串解析，JSON 里的空格/引号不会被拆开。
+    pcall(mp.command_native, {'script-message-to', reply_to,
+        API_PREFIX .. '-api-response', request_id, json})
+end
+
+publish_api_state = function()
+    local ok, json = pcall(utils.format_json, api_snapshot())
+    if not ok then return end
+    -- 某些旧版 mpv 不提供 user-data 写入；pcall 兜住，绝不影响主流程。
+    pcall(mp.set_property_native, 'user-data/' .. API_PREFIX .. '/state', json)
+end
+
+local function api_action_list()
+    local out = {}
+    for name in pairs(API_CALLS) do out[#out + 1] = name end
+    table.sort(out)
+    return out
+end
+
+mp.register_script_message('api', function(reply_to, request_id, action, ...)
+    -- 参数校验：回复目标/请求 id 缺失或含命令分隔符时只告警，不向未知目标发消息。
+    if not valid_token(reply_to) or not valid_token(request_id) then
+        msg.warn('api: bad reply_to/request_id: ' ..
+            tostring(reply_to) .. '/' .. tostring(request_id))
+        return
+    end
+    local function reply(p)
+        p.request_id = request_id
+        api_reply(reply_to, request_id, p)
+    end
+    local snap = api_snapshot()
+    if action == 'get-state' then
+        reply({ok = true, data = snap})
+    elseif action == 'get' then
+        local key = (...)
+        if not valid_token(key) then
+            reply({ok = false, error = 'bad_key'})
+            return
+        end
+        local v = api_get(snap, key)
+        if v == nil then
+            reply({ok = false, error = 'unknown_key', key = key})
+        else
+            reply({ok = true, key = key, value = v})
+        end
+    elseif action == 'list-actions' then
+        reply({ok = true, actions = api_action_list()})
+    elseif action == 'call' then
+        local name = (...)
+        if not valid_token(name) then
+            reply({ok = false, error = 'bad_action_name'})
+            return
+        end
+        if not API_CALLS[name] then
+            reply({ok = false, error = 'action_not_allowed', action = name})
+            return
+        end
+        -- 转发给本脚本已注册的原生入口，复用既有参数处理与副作用。
+        local args = {...}
+        local cmd = {'script-message-to', API_PREFIX, name}
+        for i = 2, #args do cmd[#cmd + 1] = tostring(args[i]) end
+        local ok = pcall(mp.command_native, cmd)
+        if not ok then
+            reply({ok = false, error = 'dispatch_failed', action = name})
+        else
+            -- call 是异步派发：返回「已派发」，实际状态变化请用订阅通道观察。
+            reply({ok = true, dispatched = name, async = true})
+        end
+    else
+        reply({ok = false, error = 'unknown_action', action = tostring(action)})
+    end
+end)
+
+-- 注册完成后发布初始状态，让晚于本脚本加载的订阅者也能立刻读到。
+pcall(mp.set_property_native, 'user-data/' .. API_PREFIX .. '/version', API_VERSION)
+pcall(publish_api_state)
+msg.info('sub-style external API ready (v' .. API_VERSION .. ')')

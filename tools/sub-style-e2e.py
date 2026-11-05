@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # sub-style-e2e.py —— uosc_subtitle_style.lua 真机端到端测试编排
 # 流程：
-#   1. 以 --config-dir=<本仓库> 把仓库当作 portable_config 加载（脚本/conf 均来自
-#      本仓库，~~/ 指向仓库根），--script 加载 tools/sub-style-probe.lua 驱动，
-#      双字幕轨（主 fixture + 次 fixture，--secondary-sid），
+#   1. 以 --script 加载 tools/sub-style-probe.lua 驱动真实 mpv（加载真实
+#      portable_config），双字幕轨（主 fixture + 次 fixture，--secondary-sid），
 #      依次验证：分轨位置 / 分轨字体 / 分轨字号（及时反馈）/ 状态文件 / 重置 /
 #      字体选择器。
-#   2. 解析日志里的 PROBE 行汇总断言（PASS/FAIL/SKIP；SKIP = 环境缺前置条件）。
+#   2. 解析日志里的 PROBE 行汇总断言。
 #   3. 视觉判据（截图波段分析）：
 #      - main50：主字幕带移到中部，次字幕带仍在底部 ⇒ 两条独立白字带
 #      - sec25：次字幕带上移到中上部，主字幕带保持不动
@@ -15,72 +14,99 @@
 #   4. 预设样式真机用例：彩色才套用 / 白色保持原样 / 预设可修改并缓存 /
 #      双语（双轨）跳过（A 套用+B 保持+C 保存+D 重启读缓存+E 双轨不套用，
 #      含左上角报告与字幕变色判据）
-# 用法（在本仓库根目录）：python tools/sub-style-e2e.py
-#   mpv.exe 定位顺序：环境变量 MPV_EXE → PATH → 仓库同级目录的 mpv.exe。
-#   uosc（可选）定位顺序：环境变量 UOSC_MAIN → <mpv根>/portable_config/scripts/uosc/main.lua。
-#     带 uosc 运行时字体选择器三项断言参与；不带则记 SKIP（菜单/字体枚举走 uosc 路径）。
-#   ⚠ 视觉判据依赖 Pillow：请用已装 Pillow 的 Python 运行；缺 PIL 时
+#   4b. v1.0.6 回归：灰色 #8B8B8B + 带 \pos 的顶部字幕自动转黑白、
+#       菜单点黑色主色（带引号的 "#000000" 不再被当注释吞掉）、字体写入共享样式表。
+#       顶部字幕带的像素由 screenshot-raw 差分统计，与 OSD/UI 无关。
+#   5d. v1.0.7 上下黑边贴合：用 Pillow 生成 640x360、上下各 24px 内嵌黑条
+#       的图片当视频帧，双轨 SRT 普通对白；探针轮询等自动检测落定后，
+#       对比开关前后的字幕像素分布 —— 贴合后主/次轨分别缩进下/上黑边，
+#       画面中部（视频内容区）差分像素必须归零。
+#   5e. v1.0.9 内封定位 ASS：用 sub-style-mkv-fixture.py 生成带内封 ASS
+#       轨的最小 MKV（MJPEG 单帧 + \pos 事件），跑 plain / bars 两轮真机，
+#       验证缩放与字号真的改变 \pos 字幕画面、sub-scale 不双叠加、\pos 不随
+#       nudge 位移、关通道可复现原报障、黑边自动缩小并把放大值存进预设。
+#   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
+#     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
+# 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
+# 独立公开仓库（仓库根没有 mpv.exe）复用本编排时：
+#   MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
+#   会自动加 --config-dir=<仓库根>，把仓库当作 portable_config 且不读用户全局配置。
+# ⚠ 视觉判据依赖 Pillow：PATH 里的 managed python 未装 Pillow，本机请用
+#   系统 Python（C:\Python314\python.exe，已装 Pillow 12.x）运行；缺 PIL 时
 #   本脚本会以 exit 2 明确退出，而不是崩在 traceback 里。
 import os, re, shutil, subprocess, sys, tempfile
-import atexit
 
 try:
     import PIL  # noqa: F401
+    from PIL import Image
 except ImportError:
-    print('FATAL: 缺少 Pillow（视觉判据需要）。请用已安装 Pillow 的 Python 运行，例如：')
+    print('FATAL: 缺少 Pillow（视觉判据需要）。请用系统 Python 运行，例如：')
     print('  C:\\Python314\\python.exe tools/sub-style-e2e.py')
     sys.exit(2)
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))          # 本仓库根目录
-MPV_DIR = os.path.dirname(ROOT)                                             # 仓库同级目录（含 mpv.exe）
-MPV = os.environ.get('MPV_EXE') or shutil.which('mpv') or os.path.join(MPV_DIR, 'mpv.exe')
+PORTABLE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))   # portable_config/
+MPV_DIR = os.path.dirname(PORTABLE)                                       # mpv 根目录（含 mpv.exe）
+MPV = os.path.join(MPV_DIR, 'mpv.exe')
+# 独立公开仓库（awujiana/uosc_subtitle_style）也共用这份编排：仓库根就是配置根，
+# 播放器不在上一级目录。此时由 MPV_EXE 指定 mpv.exe，并显式 --config-dir 隔离
+# 用户全局配置；生产环境命中 mpv.exe 时 CONFIG_ARGS 为空，行为与旧版完全一致。
+CONFIG_ARGS = []
+STANDALONE = not os.path.exists(MPV)
+if STANDALONE:
+    MPV = os.environ.get('MPV_EXE') or shutil.which('mpv') or MPV
+    MPV_DIR = os.path.dirname(os.path.abspath(MPV))
+    CONFIG_ARGS = ['--config-dir=' + PORTABLE, '--idle=no']
+    if not os.path.exists(MPV):
+        print('FATAL: 未找到 mpv.exe；请设置 MPV_EXE 或把 mpv 放进 PATH')
+        sys.exit(2)
+    print('standalone layout: config-dir=%s mpv=%s' % (PORTABLE, MPV))
 
-# uosc（可选依赖）：环境变量 UOSC_MAIN → <mpv根>/portable_config/scripts/uosc/main.lua。
-# 独立仓库不内置 uosc（第三方 LGPL 项目）。⚠ mpv 只把 **scripts/ 子目录下的
-# main.lua** 加入 package.path（顶层 .lua 与 --script= 都不加，实测 uosc 的
-# require('lib/std') 会失败）⇒ 探测到时把整个 uosc 目录复制成 ROOT/scripts/uosc/，
-# 由 --config-dir 自动加载，行为与用户环境一致；探针的字体选择器断言随之
-# 从 SKIP 升级为强制（SUBSTYLE_UOSC=1）。
-def find_uosc():
-    env = os.environ.get('UOSC_MAIN')
-    if env and os.path.exists(env):
-        return env
-    cand = os.path.join(os.path.dirname(os.path.abspath(MPV)), 'portable_config',
-                        'scripts', 'uosc', 'main.lua')
-    if os.path.exists(cand):
-        return cand
-    return None
 
-UOSC = find_uosc()
-UOSC_COPY = os.path.join(ROOT, 'scripts', 'uosc')
-MPV_CWD = os.path.dirname(os.path.abspath(MPV))   # 以 mpv.exe 所在目录为 cwd
-# 把仓库当作 portable_config：mpv 从 ROOT/scripts 加载被测脚本、从
-# ROOT/script-opts 读 conf，~~/ 指向 ROOT（状态/预设/字体缓存落点与清理一致）。
-# 不读用户环境的 mpv.conf/uosc.conf/input.conf —— 测试与用户配置隔离。
-BASE_ARGS = ['--config-dir=' + ROOT, '--idle=no']
-if UOSC:
-    shutil.copytree(os.path.dirname(UOSC), UOSC_COPY, dirs_exist_ok=True)
-    atexit.register(lambda: shutil.rmtree(UOSC_COPY, ignore_errors=True))
-    print('uosc: %s → scripts/uosc/（字体选择器断言启用）' % UOSC)
-else:
-    print('uosc: 未探测到（设 UOSC_MAIN 可启用字体选择器断言，否则记 SKIP）')
+def run_mpv(args, **kwargs):
+    """在真正启动 mpv 前注入 CONFIG_ARGS，统一 cwd 为 mpv.exe 所在目录。"""
+    return subprocess.run([args[0]] + CONFIG_ARGS + args[1:],
+                          cwd=MPV_DIR, **kwargs)
 
-PROBE = os.path.join(ROOT, 'tools', 'sub-style-probe.lua')
-FIXTURE_MAIN = os.path.join(ROOT, 'tools', 'sub-style-smoke.ass')
-FIXTURE_SEC = os.path.join(ROOT, 'tools', 'sub-style-smoke-sec.ass')
-FIXTURE_MULTI = os.path.join(ROOT, 'tools', 'sub-style-smoke-multi.ass')
-PROBE_STREAM = os.path.join(ROOT, 'tools', 'sub-style-probe-stream.lua')
-PROBE_PRESET = os.path.join(ROOT, 'tools', 'sub-style-probe-preset.lua')
-PROBE_PRESET_SAVE = os.path.join(ROOT, 'tools', 'sub-style-probe-preset-save.lua')
-STATE_FILE = os.path.join(ROOT, 'uosc-subtitle-style-state.json')
-PRESET_FILE = os.path.join(ROOT, 'uosc-subtitle-style-preset.json')
-FONT_CACHE = os.path.join(ROOT, 'uosc-subtitle-style-fonts.json')
+
+PROBE = os.path.join(PORTABLE, 'tools', 'sub-style-probe.lua')
+FIXTURE_MAIN = os.path.join(PORTABLE, 'tools', 'sub-style-smoke.ass')
+FIXTURE_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-sec.ass')
+FIXTURE_MULTI = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-multi.ass')
+FIXTURE_POS_GRAY = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-pos-gray.ass')
+PROBE_STREAM = os.path.join(PORTABLE, 'tools', 'sub-style-probe-stream.lua')
+PROBE_PRESET = os.path.join(PORTABLE, 'tools', 'sub-style-probe-preset.lua')
+PROBE_PRESET_SAVE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-preset-save.lua')
+PROBE_POS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-pos.lua')
+PROBE_BARS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-bars.lua')
+FIXTURE_BARS_MAIN = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-main.srt')
+FIXTURE_BARS_SEC = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-bars-sec.srt')
+MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
+PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
+PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
+STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
+PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
+FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
 
 failures = []
 def check(name, ok, detail=''):
     print('%s %s%s' % ('PASS' if ok else 'FAIL', name, (' | ' + detail) if detail else ''))
     if not ok:
         failures.append(name)
+
+# 随 portable_config 一起加载、但不在本仓库维护的第三方插件（见 .gitmodules）。
+# uosc_danmaku 在无网络环境下 sites/iqiyi.lua:17 的报错每次都会污染日志；
+# 只放行带这些标签的行，被测脚本 uosc_subtitle_style / 各探针的报错仍然 FAIL。
+THIRD_PARTY_LOG_TAGS = ('[uosc_danmaku]', '[uosc_staff_credits]', '[dynamic_crop]')
+
+def lua_errors(text):
+    errs, ignored = [], 0
+    for l in text.splitlines():
+        if 'Lua error' in l or 'traceback' in l:
+            if any(t in l for t in THIRD_PARTY_LOG_TAGS):
+                ignored += 1
+            else:
+                errs.append(l)
+    return errs, ignored
 
 def main():
     workdir = tempfile.mkdtemp(prefix='substyle-e2e-')
@@ -95,11 +121,42 @@ def main():
 
     env = dict(os.environ)
     env['SUBSTYLE_SMOKE_DIR'] = workdir
-    if UOSC:
+    # 本环境（portable_config）uosc 是产品前端，恒应存在：探测到 main.lua 即以
+    # SUBSTYLE_UOSC=1 令探针把字体选择器断言升级为强制；确实没有 uosc 时才容忍
+    # SKIP（探针会打印原因），避免「悄悄少测三项」。必须在 mpv 启动前设置。
+    uosc_main = os.path.join(PORTABLE, 'scripts', 'uosc', 'main.lua')
+    uosc_present = os.path.exists(uosc_main)
+    if not uosc_present and STANDALONE:
+        # 独立仓库不内置 uosc（第三方 LGPL 项目）：从 UOSC_MAIN 或 mpv 目录的
+        # portable_config 复制一份，让字体选择器断言照常参与实测而非悄悄 SKIP。
+        # 副本保留在 scripts/uosc/（.gitignore 已排除），后续 E2E 直接复用：
+        # 不做退出时删除 —— 部分托管 Python 会拦截 shutil.rmtree / os.unlink 的
+        # 批量删除，在 atexit 里抛 SystemExit 污染 E2E 日志末尾。副本不会进提交，
+        # 也不随 git 源码分发（Release / 克隆得到的仓库里没有这个目录）。
+        source = os.environ.get('UOSC_MAIN') or os.path.join(
+            MPV_DIR, 'portable_config', 'scripts', 'uosc', 'main.lua')
+        if os.path.exists(source):
+            uosc_dir = os.path.dirname(uosc_main)
+            shutil.copytree(os.path.dirname(source), uosc_dir, dirs_exist_ok=True)
+            uosc_present = os.path.exists(uosc_main)
+            print('uosc: %s → %s（测试副本，.gitignore 已排除，后续复用）'
+                  % (source, uosc_dir))
+    if uosc_present:
         env['SUBSTYLE_UOSC'] = '1'
+        print('uosc: %s（字体选择器断言强制）' % uosc_main)
+    else:
+        print('uosc: 未找到 %s —— 字体选择器三项将 SKIP' % uosc_main)
+
+    # uosc_staff_credits 是配置整合包里的另一份脚本；独立仓库没有它时，
+    # 令 API 探针跳过职员表那 7 条断言（不伪造 PASS，直接不参与期望表）。
+    staff_present = os.path.exists(os.path.join(
+        PORTABLE, 'scripts', 'uosc_staff_credits', 'main.lua'))
+    env['SUBSTYLE_STAFF_API'] = '1' if staff_present else '0'
+    print('staff_credits: %s（API 探针职员表断言%s）'
+          % ('present' if staff_present else 'absent',
+             '启用' if staff_present else '跳过'))
     cmd = [
         MPV,
-    ] + BASE_ARGS + [
         '--script=' + PROBE,
         '--sub-file=' + FIXTURE_MAIN,
         '--sub-file=' + FIXTURE_SEC,
@@ -118,7 +175,7 @@ def main():
         'av://lavfi:color=c=gray:s=640x360:d=60:rate=25',
     ]
     print('RUN:', ' '.join(cmd))
-    proc = subprocess.run(cmd, cwd=MPV_CWD, env=env, stdout=open(log, 'w'),
+    proc = run_mpv(cmd, env=env, stdout=open(log, 'w'),
                           stderr=subprocess.STDOUT, timeout=240)
     print('mpv exit=%d' % proc.returncode)
 
@@ -133,7 +190,8 @@ def main():
     expected = ['base-shot', 'baseline-keeps-mpv-defaults', 'main-pos-50', 'main50-shot',
                 'sec-target-switched', 'sec-pos-75', 'main-pos-untouched', 'sec10-shot',
                 'sec-font-set', 'sec-override-force', 'main-override-baseline',
-                'font-not-leaked-to-shared-list', 'secfont-shot',
+                'font-in-shared-list-for-pos-signs',
+                'toggle-all-clears-shared-style', 'secfont-shot',
                 'sec-size-24-prop', 'secsize03-shot', 'secsize-shot',
                 'overlap-target-kept', 'overlap-other-pushed',
                 'outline-size-set', 'outline-color-set',
@@ -141,8 +199,8 @@ def main():
                 'reset-restores-defaults',
                 'font-picker-opens', 'font-cache-enumerated', 'font-picker-rescan']
     # 无 uosc 时字体选择器三项合法 SKIP（探针记录原因）；带 uosc 时 SKIP = 缺陷
-    skippable = set() if UOSC else {'font-picker-opens', 'font-cache-enumerated',
-                                    'font-picker-rescan'}
+    skippable = set() if uosc_present else {
+        'font-picker-opens', 'font-cache-enumerated', 'font-picker-rescan'}
     for name in expected:
         if name not in results:
             check('probe-' + name, False, 'missing in log')
@@ -155,8 +213,9 @@ def main():
           summary.group(0) if summary else 'not found')
 
     # ---- 2. 日志中不得有 Lua 错误，也不得中途结束播放 ----
-    lua_errs = [l for l in text.splitlines() if 'Lua error' in l or 'traceback' in l]
-    check('no-lua-errors', len(lua_errs) == 0, '; '.join(lua_errs[:3]))
+    lua_errs, ignored = lua_errors(text)
+    check('no-lua-errors', len(lua_errs) == 0,
+          '; '.join(lua_errs[:3]) + (' | 已忽略第三方插件报错 %d 行' % ignored if ignored else ''))
     eof_lines = [l for l in text.splitlines() if 'Exiting... (End of file)' in l]
     check('playback-survives-styles', len(eof_lines) == 0,
           'sub-reload/异常导致播放提前结束 %d 次' % len(eof_lines))
@@ -258,7 +317,6 @@ def main():
     stream_log = os.path.join(workdir, 'stream-log.txt')
     stream_cmd = [
         MPV,
-    ] + BASE_ARGS + [
         '--script=' + PROBE_STREAM,
         '--sub-file=' + FIXTURE_MULTI,
         '--vo=gpu', '--ao=null',
@@ -269,7 +327,7 @@ def main():
         'av://lavfi:color=c=gray:s=640x360:d=24:rate=25',
     ]
     print('RUN(stream):', ' '.join(stream_cmd))
-    sproc = subprocess.run(stream_cmd, cwd=MPV_CWD, env=env, stdout=open(stream_log, 'w'),
+    sproc = run_mpv(stream_cmd, env=env, stdout=open(stream_log, 'w'),
                            stderr=subprocess.STDOUT, timeout=180)
     print('mpv(stream) exit=%d' % sproc.returncode)
     stext = open(stream_log, encoding='utf-8', errors='replace').read()
@@ -288,8 +346,9 @@ def main():
     ssum = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', stext)
     check('stream-summary-all-ok', bool(ssum) and ssum.group(2) == '0',
           ssum.group(0) if ssum else 'not found')
-    serrs = [l for l in stext.splitlines() if 'Lua error' in l or 'traceback' in l]
-    check('stream-no-lua-errors', len(serrs) == 0, '; '.join(serrs[:2]))
+    serrs, signored = lua_errors(stext)
+    check('stream-no-lua-errors', len(serrs) == 0,
+          '; '.join(serrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % signored if signored else ''))
 
     # ---- 5. 预设样式：彩色才套用 / 白色保持原样 / 预设可修改并缓存 ----
     # 六个真机用例（每次独立运行，watch-later 已隔离）：
@@ -301,8 +360,8 @@ def main():
     #     粗细 0.5），且字幕带保持黄色（与 A 同 fixture 差分 ⇒ 证明是双语生效而非偶然）
     #   F 白字 + 紫描边(#481081) fixture → 描边是彩色 ⇒ 判彩色并转黑白（override=force /
     #     白字），字幕带由紫描边变黑描边（与 A 差分：A 考彩字变白，F 考彩描边也触发）
-    FIXTURE_COLORED = os.path.join(ROOT, 'tools', 'sub-style-smoke-colored.ass')
-    FIXTURE_PURPLE = os.path.join(ROOT, 'tools', 'sub-style-smoke-purple.ass')
+    FIXTURE_COLORED = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-colored.ass')
+    FIXTURE_PURPLE = os.path.join(PORTABLE, 'tools', 'sub-style-smoke-purple.ass')
 
     def probe_of(text):
         rs = {}
@@ -315,7 +374,7 @@ def main():
     def run_preset_case(script, fixture, tag, expect, color='#FFFFFF', outline='2',
                         sec_fixture=None):
         plog = os.path.join(workdir, tag + '-log.txt')
-        pcmd = [MPV] + BASE_ARGS + ['--script=' + script, '--sub-file=' + fixture]
+        pcmd = [MPV, '--script=' + script, '--sub-file=' + fixture]
         if sec_fixture:
             pcmd += ['--sub-file=' + sec_fixture, '--secondary-sid=2']
         pcmd += [
@@ -334,7 +393,7 @@ def main():
         penv['SUBSTYLE_PRESET_OUTLINE'] = outline
         penv['SUBSTYLE_PRESET_TAG'] = tag
         print('RUN(%s):' % tag, ' '.join(pcmd))
-        pproc = subprocess.run(pcmd, cwd=MPV_CWD, env=penv,
+        pproc = run_mpv(pcmd, env=penv,
                                stdout=open(plog, 'w'), stderr=subprocess.STDOUT,
                                timeout=120)
         print('mpv(%s) exit=%d' % (tag, pproc.returncode))
@@ -495,12 +554,298 @@ def main():
     check('preset-f-late-has-white', f_late_white is not None and f_late_white > 100,
           'white=%s' % (f_late_white,))
 
-    perrs = []
-    for tag, text in (('a', ta), ('b', tb), ('c', tc), ('d', td), ('e', te), ('f', tf)):
-        for l in text.splitlines():
-            if 'Lua error' in l or 'traceback' in l:
-                perrs.append(tag + ':' + l)
-    check('preset-no-lua-errors', len(perrs) == 0, '; '.join(perrs[:3]))
+    perrs, pignored = [], 0
+    for tag, ptext in (('a', ta), ('b', tb), ('c', tc), ('d', td), ('e', te), ('f', tf)):
+        es, ig = lua_errors(ptext)
+        pignored += ig
+        perrs += [tag + ':' + l for l in es]
+    check('preset-no-lua-errors', len(perrs) == 0,
+          '; '.join(perrs[:3]) + (' | 已忽略第三方插件报错 %d 行' % pignored if pignored else ''))
+
+    # ---- 5c. v1.0.6 回归：\pos 顶部字幕 / 灰色字幕 / 黑色主色 / 字体 ----
+    # 用户报障的四条集中在一个真机用例里验证：灰色(#8B8B8B)自动转黑白、
+    # 顶部 \pos 字幕随样式表覆盖变色、菜单点黑色不再被当注释吞掉、字体写入共享列表。
+    # 背景用纯黑，让灰/白字幕像素在 screenshot-raw 差分里清晰可数。
+    for p in (STATE_FILE, PRESET_FILE):
+        if os.path.exists(p):
+            os.remove(p)
+    pos_log = os.path.join(workdir, 'pos-log.txt')
+    pos_cmd = [
+        MPV, '--script=' + PROBE_POS, '--sub-file=' + FIXTURE_POS_GRAY,
+        '--vo=gpu', '--ao=null',
+        '--watch-later-dir=' + watch_dir,
+        '--save-position-on-quit=no', '--no-resume-playback',
+        '--msg-level=all=info',
+        'av://lavfi:color=c=black:s=640x360:d=14:rate=25',
+    ]
+    print('RUN(pos):', ' '.join(pos_cmd))
+    posproc = run_mpv(pos_cmd, env=env,
+                            stdout=open(pos_log, 'w'), stderr=subprocess.STDOUT,
+                            timeout=120)
+    print('mpv(pos) exit=%d' % posproc.returncode)
+    postext = open(pos_log, encoding='utf-8', errors='replace').read()
+    prs = probe_of(postext)
+    for name in ('pos-early-top-gray', 'pos-auto-primary-ass', 'pos-auto-outline-ass',
+                 'pos-auto-sub-color', 'pos-top-gray-turned-white',
+                 'pos-black-sub-color', 'pos-black-primary-ass',
+                 'pos-black-top-not-white', 'pos-font-shared-list',
+                 'pos-font-sub-font'):
+        if name not in prs:
+            check(name, False, 'missing in log')
+        else:
+            check(name, prs[name][0] == 'PASS', prs[name][1][:150])
+    psum = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', postext)
+    check('pos-summary-all-ok', bool(psum) and psum.group(2) == '0',
+          psum.group(0) if psum else 'not found')
+    poerrs, poignored = lua_errors(postext)
+    check('pos-no-lua-errors', len(poerrs) == 0,
+          '; '.join(poerrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % poignored if poignored else ''))
+
+    # ---- 5d. v1.0.7 上下黑边贴合：双轨普通对白缩进上下黑边 ----
+    # 夹具是「视频帧里真的编码了黑条」的图片（不是窗口 letterbox），
+    # mpv 的 sub-use-margins 对它无能为力，只能靠脚本逐行亮度检测。
+    for p in (STATE_FILE, PRESET_FILE):
+        if os.path.exists(p):
+            os.remove(p)
+    bars_png = os.path.join(workdir, 'substyle-bars.png')
+    bars_img = Image.new('RGB', (640, 360), (0, 0, 0))
+    bars_img.paste((128, 128, 128), (0, 24, 640, 336))   # 上下各 24px 黑条
+    bars_img.save(bars_png)
+    bars_log = os.path.join(workdir, 'bars-log.txt')
+    bars_cmd = [
+        MPV, '--script=' + PROBE_BARS,
+        '--sub-file=' + FIXTURE_BARS_MAIN,
+        '--sub-file=' + FIXTURE_BARS_SEC,
+        '--secondary-sid=2',
+        '--sub-margin-y=80',          # 关闭贴合时字幕明显压在画面上，便于对照
+        '--vo=gpu', '--ao=null',
+        '--pause=yes', '--image-display-duration=inf',
+        '--watch-later-dir=' + watch_dir,
+        '--save-position-on-quit=no', '--no-resume-playback',
+        '--msg-level=all=info',
+        bars_png,
+    ]
+    print('RUN(bars):', ' '.join(bars_cmd))
+    barsproc = run_mpv(bars_cmd, env=env,
+                              stdout=open(bars_log, 'w'), stderr=subprocess.STDOUT,
+                              timeout=120)
+    print('mpv(bars) exit=%d' % barsproc.returncode)
+    barstext = open(bars_log, encoding='utf-8', errors='replace').read()
+    brs = probe_of(barstext)
+    bars_expected = (
+        'bars-auto-detect-applied', 'bars-fit-main-pos-bottom', 'bars-fit-sec-pos-top',
+        'bars-fit-scale-limited', 'bars-fit-sec-scale-same',
+        'bars-fit-margin-overrides-baseline', 'bars-fit-margin-is-integer',
+        'bars-off-restores-margin', 'bars-base-frame-ok',
+        'bars-base-dialogue-over-picture', 'bars-fit-frame-ok',
+        'bars-fit-bottom-dialogue-in-lower-bar', 'bars-fit-top-dialogue-in-upper-bar',
+        'bars-fit-no-dialogue-over-picture', 'bars-fit-both-bars-populated',
+    )
+    for name in bars_expected:
+        if name not in brs:
+            check(name, False, 'missing in log')
+        else:
+            check(name, brs[name][0] == 'PASS', brs[name][1][:150])
+    bsum = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', barstext)
+    check('bars-summary-all-ok', bool(bsum) and bsum.group(2) == '0',
+          bsum.group(0) if bsum else 'not found')
+
+    # Python 侧独立复核：解析探针打印的 BARS BASE/FIT 像素分布，
+    # 不依赖探针自己的 PASS 判定，确保「不遮挡画面内容」有独立证据。
+    def bars_row(tag):
+        m = re.search(r'BARS %s [^\n]*?top=(\d+) mid=(\d+) bottom=(\d+)' % tag,
+                      barstext)
+        return tuple(int(x) for x in m.groups()) if m else None
+    base_row, fit_row = bars_row('BASE'), bars_row('FIT')
+    check('bars-visual-rows-present', base_row is not None and fit_row is not None,
+          'base=%s fit=%s' % (base_row, fit_row))
+    check('bars-visual-picture-cleared',
+          bool(base_row and fit_row and base_row[1] > 150 and fit_row[1] == 0
+               and fit_row[0] > 80 and fit_row[2] > 80),
+          'base(top,mid,bottom)=%s fit=%s' % (base_row, fit_row))
+    berrs, bignored = lua_errors(barstext)
+    check('bars-no-lua-errors', len(berrs) == 0,
+          '; '.join(berrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % bignored
+                                  if bignored else ''))
+
+    # ---- 5e. v1.0.9 内封 \pos ASS：缩放 / 字号 / 黑边自动缩小真机回归 ----
+    # 没有 ffmpeg、示例 MKV 4.1GB 也不在仓库里，所以夹具由纯 Python 直接写
+    # 最小 Matroska：MJPEG 单帧视频 + 内封 S_TEXT/ASS 轨（含 \pos 事件）。
+    # mpv 播放它时 current-tracks/sub.external=false，才走得到 v1.0.9 新通道。
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('sub_style_mkv_fixture', MKV_FIXTURE)
+    mkvmod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mkvmod)
+    fs_plain = os.path.join(workdir, 'internal-plain.mkv')
+    fs_bars = os.path.join(workdir, 'internal-bars.mkv')
+    mkvmod.build(fs_plain, bars=0)
+    mkvmod.build(fs_bars, bars=24)
+    check('fs-fixtures-built',
+          os.path.getsize(fs_plain) > 1024 and os.path.getsize(fs_bars) > 1024,
+          'plain=%d bars=%d bytes' % (os.path.getsize(fs_plain),
+                                      os.path.getsize(fs_bars)))
+
+    def run_fs(tag, mkv_path, mode, base_n=0):
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        flog = os.path.join(workdir, 'fs-' + tag + '-log.txt')
+        fcmd = [
+            MPV, '--script=' + PROBE_FONTSIZE,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', mkv_path,
+        ]
+        fenv = dict(env)
+        fenv['SUBSTYLE_FS_MODE'] = mode
+        fenv['SUBSTYLE_FS_BASE_N'] = str(int(base_n))
+        print('RUN(fs-%s):' % tag, ' '.join(fcmd))
+        fproc = run_mpv(fcmd, env=fenv,
+                               stdout=open(flog, 'w'), stderr=subprocess.STDOUT,
+                               timeout=180)
+        print('mpv(fs-%s) exit=%d' % (tag, fproc.returncode))
+        return open(flog, encoding='utf-8', errors='replace').read()
+
+    def fs_n(text, tag):
+        m = re.search(r'FS %s n=(\d+)' % re.escape(tag), text)
+        return int(m.group(1)) if m else None
+
+    def fs_asserts(prefix, text, expected):
+        rs = probe_of(text)
+        for name in expected:
+            if name not in rs:
+                check(prefix + name, False, 'missing in log')
+            else:
+                check(prefix + name, rs[name][0] == 'PASS', rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', text)
+        check(prefix + 'summary-all-ok', bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(text)
+        check(prefix + 'no-lua-errors', len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
+
+    plain_expected = (
+        'fs-track-internal-ass', 'fs-extradata-has-style',
+        'fs-baseline-frame-ok', 'fs-baseline-no-fontsize',
+        'fs-scale-writes-ass-fontsize', 'fs-scale-neutralizes-sub-scale',
+        'fs-scale-folds-sub-font-size', 'fs-scale-enlarges-pos-subtitle',
+        'fs-scale-reset-restores',
+        'fs-size-step-writes-fontsize', 'fs-size-step-enlarges',
+        'fs-size-step-reversible',
+        'fs-nudge-keeps-pos-subtitle', 'fs-nudge-boundary-clamps',
+        'fs-toggle-off-clears-fontsize',
+        'fs-channel-off-uses-native-sub-scale',
+        'fs-channel-off-scale-ignored-by-pos', 'fs-toggle-on-restores',
+    )
+    ptext = run_fs('plain', fs_plain, 'plain')
+    fs_asserts('fs-plain-', ptext, plain_expected)
+
+    # Python 侧独立复核：解析探针 FS 行的像素数，不依赖探针自己的 PASS 判定
+    n_base = fs_n(ptext, '00-baseline')
+    n_s150 = fs_n(ptext, '01-scale150')
+    n_back = fs_n(ptext, '02-scale100')
+    n_plus = fs_n(ptext, '03-sizeplus8')
+    n_off = fs_n(ptext, '07-off-scale-no-visual')
+    n_on = fs_n(ptext, '09-toggle-on-restores')
+    check('fs-plain-visual-rows-present',
+          all(v is not None for v in (n_base, n_s150, n_back, n_plus, n_off, n_on)),
+          'base=%s scale150=%s back=%s plus=%s off=%s on=%s'
+          % (n_base, n_s150, n_back, n_plus, n_off, n_on))
+    if all(v is not None for v in (n_base, n_s150, n_back, n_plus, n_off, n_on)):
+        check('fs-plain-visual-scale-enlarges', n_s150 > n_base * 1.35,
+              '%d -> %d' % (n_base, n_s150))
+        check('fs-plain-visual-reset-restores', abs(n_back - n_base) < n_base * 0.08,
+              '%d -> %d' % (n_base, n_back))
+        check('fs-plain-visual-size-step-enlarges',
+              n_plus > n_base * 1.08 and n_plus < n_s150,
+              'base=%d plus=%d scale150=%d' % (n_base, n_plus, n_s150))
+        check('fs-plain-visual-channel-off-ignores',
+              abs(n_off - n_base) < n_base * 0.10,
+              'base=%d off=%d（复现原报障：sub-scale 变了但画面不变）'
+              % (n_base, n_off))
+        check('fs-plain-visual-toggle-on-restores', n_on > n_base * 1.35,
+              '%d -> %d' % (n_base, n_on))
+
+    bars_expected = (
+        'fs-bars-track-internal-ass', 'fs-bars-auto-detect-applied',
+        'fs-bars-shrinks-pos-subtitle', 'fs-bars-size-step-writes-fontsize',
+        'fs-bars-size-step-enlarges', 'fs-bars-size-step-saves-preset',
+        'fs-bars-size-step-reversible', 'fs-bars-off-clears-fontsize',
+        'fs-bars-off-restores-visual',
+    )
+    btext = run_fs('bars', fs_bars, 'bars', n_base or 0)
+    fs_asserts('fs-bars-', btext, bars_expected)
+    b_fit = fs_n(btext, '00-fit')
+    b_plus = fs_n(btext, '01-sizeplus8')
+    b_off = fs_n(btext, '03-fit-off')
+    check('fs-bars-visual-rows-present',
+          all(v is not None for v in (b_fit, b_plus, b_off)),
+          'fit=%s plus=%s off=%s plain-baseline=%s' % (b_fit, b_plus, b_off, n_base))
+    if all(v is not None for v in (b_fit, b_plus, b_off)) and n_base:
+        check('fs-bars-visual-auto-shrinks', b_fit < n_base * 0.95,
+              'plain=%d fit=%d' % (n_base, b_fit))
+        check('fs-bars-visual-size-step-enlarges', b_plus > b_fit * 1.05,
+              'fit=%d plus=%d' % (b_fit, b_plus))
+        check('fs-bars-visual-off-restores', abs(b_off - n_base) < n_base * 0.10,
+              'off=%d plain=%d' % (b_off, n_base))
+    # 预设缓存内容独立复核（探针在 Lua 侧已断言，这里再从 Python 读一次）
+    try:
+        preset_raw = open(PRESET_FILE, encoding='utf-8').read() \
+            if os.path.exists(PRESET_FILE) else ''
+    except OSError:
+        preset_raw = ''
+    check('fs-bars-preset-file-has-size', '"size"' in preset_raw,
+          preset_raw[:120])
+
+    # ---- 5f. v1.0.10 对外 API：user-data 广播 + 请求-响应 + call 真机生效 ----
+    # 复用 5e 生成的无黑边内封 ASS MKV；这一组不判像素，只判 API 契约。
+    api_log = os.path.join(workdir, 'api-log.txt')
+    api_cmd = [
+        MPV, '--script=' + PROBE_API,
+        '--vo=gpu', '--ao=null', '--pause=yes',
+        '--image-display-duration=inf',
+        '--watch-later-dir=' + watch_dir,
+        '--save-position-on-quit=no', '--no-resume-playback',
+        '--msg-level=all=info', fs_plain,
+    ]
+    print('RUN(api):', ' '.join(api_cmd))
+    aproc = run_mpv(api_cmd, env=env,
+                           stdout=open(api_log, 'w'), stderr=subprocess.STDOUT,
+                           timeout=180)
+    print('mpv(api) exit=%d' % aproc.returncode)
+    atext = open(api_log, encoding='utf-8', errors='replace').read()
+    api_expected = [
+        'api-userdata-version', 'api-userdata-version-is-native-string',
+        'api-userdata-state-json', 'api-userdata-state-fields',
+        'api-get-state-reply', 'api-get-state-request-id',
+        'api-get-state-has-data', 'api-get-dotted-key', 'api-get-unknown-key',
+        'api-call-dispatch', 'api-call-changes-state-broadcast',
+        'api-property-pos-matches-broadcast', 'api-subscribe-native-observer',
+        'api-call-rejects-recursive',
+    ]
+    # uosc_staff_credits 子仓库的对外 API：仅当配置里真的装了它才验，
+    # 独立公开仓库不带这份脚本，跳过相应 7 条而不是伪造 PASS。
+    if staff_present:
+        api_expected += [
+            'staff-api-userdata-version', 'staff-api-userdata-state-json',
+            'staff-api-state-fields', 'staff-api-no-token-leak',
+            'staff-api-get-state-reply', 'staff-api-get-state-request-id',
+            'staff-api-list-actions',
+        ]
+    ars = probe_of(atext)
+    for name in api_expected:
+        if name not in ars:
+            check('api-' + name, False, 'missing in log')
+        else:
+            check('api-' + name, ars[name][0] == 'PASS', ars[name][1][:150])
+    asum = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', atext)
+    check('api-summary-all-ok', bool(asum) and asum.group(2) == '0',
+          asum.group(0) if asum else 'not found')
+    aerrs, aignored = lua_errors(atext)
+    check('api-no-lua-errors', len(aerrs) == 0,
+          '; '.join(aerrs[:2]) + (' | 已忽略第三方插件报错 %d 行' % aignored if aignored else ''))
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):

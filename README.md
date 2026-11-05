@@ -11,7 +11,7 @@
 
 <h1>uosc_subtitle_style</h1>
 
-<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理</strong>
+<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理 · v1.0.10</strong>
 
 </div>
 
@@ -25,11 +25,12 @@
 
 - [🚀 项目简介](#sec-1)
 - [✨ 核心特色](#sec-2)
+- [🆕 v1.0.6 – v1.0.10 更新要点](#sec-15)
 - [🖼 展示图](#sec-3)
 - [📦 安装 / 快速开始](#sec-4)
 - [🎮 使用说明](#sec-5)
-- [⚙️ 配置项](#sec-6)
-- [⚠️ 注意事项](#sec-7)
+- [⚙ 配置项](#sec-6)
+- [⚠ 注意事项](#sec-7)
 - [🧪 测试](#sec-8)
 - [📄 文档](#sec-9)
 - [💬 反馈建议](#sec-10)
@@ -65,8 +66,26 @@
 | 彩色预设不串台 | 自动套用预设只对彩色字幕生效；切到黑白字幕自动恢复该字幕原样，不继承上个彩色视频的预设（内封/外挂均适用） |
 | 中日双语布局 | 双轨按语言识别为一中一日时，日文轨自动置底 + 缩小（默认 ×0.8）、中文轨在其上；带 `\pos` 的注释幕样式/位置不变 |
 | 样式检测报告 | 载入后自动解析外挂 ASS / 内封字幕配色，左上角报告「已套用 / 保持原样 / 双语跳过」及原因 |
+| `\pos` 内封 ASS 也能改 | 字体 / 主色 / 描边色写进 `sub-ass-style-overrides` 改写 ASS 样式表本身；缩放与字号折成 `Fontsize` |
+| 字号 ±1px 微调 | 连续点击精准加减字号，边界有提示；黑边贴合时的放大值自动存进全局预设 |
+| 上下黑边贴合 | 检测视频**内嵌**黑条，主 / 次对白分别放进下 / 上黑边，按较薄一侧自适应字号，不遮挡画面 |
+| 全内封轨检查 | 逐轨检测所有内封字幕（示例 MKV 有 42 条）；切到未检查过的轨自动重检；非标准配色一律套黑白预设 |
+| 对外 API | `user-data` 状态广播 + 请求-响应 + 白名单动作转发，供其它脚本 / `input.conf` 集成 |
 | 状态持久化 | 当前样式跨文件、跨重启记忆（`persist=yes`，数据文件在 mpv 配置目录） |
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
+
+<a id="sec-15"></a>
+## 🆕 v1.0.6 – v1.0.10 更新要点
+
+| 版本 | 关键变更 |
+| --- | --- |
+| v1.0.6 | 修复颜色命令里的裸 `#RRGGBB` 被 mpv 当注释吞掉；`sub-ass-style-overrides` 让带 `\pos` 的顶部字幕 / signs 也能换字体转黑白；识别灰色字幕 `#8B8B8B`；主色候选加入黑色与灰阶；菜单点击后保持打开并刷新选中态 |
+| v1.0.7 | 上下**内嵌黑边**贴合，主 / 次对白分别进下 / 上黑边；`sub-margin-y` 取整并在关闭 / 切文件时显式还原 |
+| v1.0.8 | **所有内封字幕轨都要被检查**：`sid` / `secondary-sid` 切到未检查轨自动重检；内封除标准白字黑边外一律套用黑白预设，不再依赖窄颜色判据 |
+| v1.0.9 | 修复「下移 / 整体缩放无效」：真机证实带 `\pos` 的内封 ASS 对 `sub-pos` / `sub-scale` / `sub-font-size` 全部豁免，缩放与字号改走 `Fontsize`；新增 ±1px 字号微调并存入全局预设；纯 Python 生成最小 Matroska 夹具做真机回归 |
+| v1.0.10 | 上下黑边双对话字幕字号自适应判据（较薄黑边决定倍率、上下同倍率、不溢出）；新增对外 API v1.0.0（状态广播 / 请求-响应 / 白名单转发）；单测扩到 328 条 |
+
+> 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的是被自更新器降级过的 v1.0.5 —— **完全退出并重启播放器**。自更新器以文件头 `-- @version:` 判定本地版本，同版本不更新、本地更新时禁止降级。
 
 <a id="sec-3"></a>
 ## 🖼 展示图
@@ -108,7 +127,9 @@ portable_config/                  ← mpv 配置目录（便携版在 mpv.exe �
 <details>
 <summary><strong>方式二：从 Releases 下载</strong></summary>
 
-前往 [Releases](https://github.com/awujiana/uosc_subtitle_style/releases) 页面下载最新版 `uosc_subtitle_style-*.zip`，解压后按上面的目录树放到对应位置即可。
+前往 [Releases](https://github.com/awujiana/uosc_subtitle_style/releases) 下载最新版的两个**直接文件**（不打包 zip）：
+`uosc_subtitle_style.lua` 放进 `scripts/`、`uosc_subtitle_style.conf` 放进 `script-opts/`。
+`version.json` 是同一版本的机器可读清单，供脚本化安装与版本比对使用。
 
 </details>
 
@@ -160,9 +181,17 @@ ALT+Q script-message-to uosc_subtitle_style open-menu    # 字幕样式菜单
 | `preset-toggle-colored` | 切换「仅彩色字幕才套用预设」 |
 | `preset-toggle-dual` | 切换「双语字幕（双轨）时保持原样」 |
 | `preset-toggle-enabled` | 预设总开关 |
+| `toggle-gray` / `toggle-all` | 灰色字幕也转黑白 / 全部字幕统一样式（共享样式表覆盖）开关 |
+| `size-step <±px>` | 字号 ±1px 连续微调；黑边贴合时自动存进全局预设 |
+| `ass-fontsize-toggle` | 内封定位 ASS 的 `Fontsize` 缩放 / 字号通道开关 |
+| `letterbox-toggle` / `letterbox-refresh` | 上下黑边贴合开关 / 重新检测黑边 |
+| `api <reply_to> <request_id> <action>` | 对外 API 请求-响应，见 [契约文档](docs/api-uosc-subtitle-style.md) |
 | `inspect` | 重新运行样式检测并出报告 |
 | `reset` | 恢复默认并清除记忆 |
 | `fix-override` | 把目标轨 `sub-ass-override` 设为 `scale`（位置/样式的前置条件） |
+
+> `api` 只做只读快照 + 白名单动作转发，**不会**新增字幕属性写入路径；旧入口参数与副作用原样保留。
+> `user-data` 是 mpv node 属性，订阅必须用 `observe_property(..., 'native')` / `get_property_native()`。
 
 ### 数据文件
 
@@ -252,10 +281,10 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 > - 不想要按钮了，把对应条目从 `controls=` 里删掉即可。
 
 <a id="sec-6"></a>
-## ⚙️ 配置项
+## ⚙ 配置项
 
-全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，30 项与脚本默认值一一对应）。
-不放此文件 = 全部使用默认值。常用几项：
+全部配置在 `script-opts/uosc_subtitle_style.conf`（该文件带中文注释，47 项与脚本默认值一一对应，
+由 `tools/sub-style-conf-verify.py` 强制校验键集合一致）。不放此文件 = 全部使用默认值。常用几项：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
@@ -279,48 +308,72 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `rebuild_delay` | `0.12` | override 切换的延迟设置（秒） |
 | `fallback_cycle` | `yes` | 无 uosc 时降级为循环切换 |
 
+v1.0.7 – v1.0.10 新增的键（完整清单与注释见 conf 文件）：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `letterbox_enabled` / `letterbox_*` | 见 conf | 检测视频**内嵌**上下黑边并把主 / 次对白分别放进下 / 上黑边；含暗场守卫、扫描范围、留白比例、限缩上限 |
+| `inspect_all_internal` / `preset_all_internal` | `yes` / `yes` | 逐轨检查所有内封字幕；内封除标准白字黑边外一律套黑白预设 |
+| `ass_fontsize` / `ass_fontsize_ratio` | `yes` / 见 conf | 把缩放与字号折成 ASS `Fontsize` 写进 `sub-ass-style-overrides`，让带 `\pos` 的内封字幕真正可缩放 |
+| `size_step` / `size_min` / `size_max` / `size_step_saves_preset` | `1` / 见 conf / 见 conf / `yes` | 字号 ±1px 微调的步长、边界，以及黑边贴合时是否把放大值存进全局预设 |
+
 > [!NOTE]
 > mpv 的 conf **不支持行尾注释**（`key=value  # 注释` 会把整段当值），所以仓库里的
 > conf 注释全部独立成行；自己改的时候请保持这个写法。
 
 <a id="sec-7"></a>
-## ⚠️ 注意事项
+## ⚠ 注意事项
 
 - **mpv ≥ 0.41**：依赖 `secondary-sub-pos` / `secondary-sub-scale` 等分轨属性。
 - **ASS 字幕**功能完整；**图形字幕（PGS/VOBSUB）**不走 libass，位置/样式均不可调。
 - **外挂 ASS 与内封字幕**都支持；样式检测对外挂解析 `[V4+ Styles]`，内封用截图差分。
 - 字体/字号/描边的修改只对**目标轨**生效；**粗体是解码器级共享**（mpv 无分轨粗体通道，菜单已注明）。
-- 带 `\pos` 的 signs/特效幕不受位置与样式修改影响（libass explicit 豁免）。
+- 带 `\pos` 的 signs/特效幕属于 libass explicit 事件，**位置**不受 `sub-pos` / `sub-scale` 影响（脚本保留原定位，微调只作用于普通字幕）；但字体 / 主色 / 描边色 / 字号仍可通过改写 ASS 样式表生效（v1.0.6 / v1.0.9）。
+- 视频**内嵌**上下黑边 ≠ 播放器窗口 letterbox：mpv 的 `sub-use-margins` / `sub-ass-force-margins` 只管后者，本脚本的 `letterbox_*` 用逐行亮度采样处理前者。
+- `sub-margin-y` 是 INT 属性且主 / 次轨共享，脚本会取整并在关闭贴合 / 切文件时显式还原。
 - Windows 实测（mpv 0.41）；Linux/macOS 的字体枚举路径已内置，理论可用但未经真机验证。
 - 首次打开字体选择器会有一次全盘字体冷枚举（约 1-3 秒），之后走签名缓存。
 
 <a id="sec-8"></a>
 ## 🧪 测试
 
-仓库自带完整的单测与真机端到端测试（改代码后请先跑门禁，判据是退出码与汇总行）：
+仓库自带完整的单测与真机端到端测试（改代码后请先跑门禁，判据是退出码与汇总行，不要只看 tail）。
+所有命令都在**仓库根目录**执行；`luajit.exe` 可用任意 LuaJIT 5.1 可执行文件替代：
 
 ```bash
-# 单元测试（191 断言，stub 掉 mpv API，任意目录可跑）
-../luajit.exe tools/sub-style-test.lua
+# 1. Lua 语法门禁（递归检查全部 .lua）
+luajit tools/lua-syntax-check.lua
 
-# conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 # ）
-C:/Python314/python.exe tools/sub-style-conf-verify.py
+# 2. 单元测试（328 条断言，stub 掉 mpv API，任意目录可跑）
+luajit tools/sub-style-test.lua
 
-# 真机 E2E（83 断言：分轨/状态/重置/字体选择器/字幕流连续性/预设六用例/截图视觉判据）
-# 需要 mpv.exe；Pillow 视觉判据需要装 Pillow 的 Python
+# 3. conf 静态门禁（按 mpv 解析语义复算：键集合 / 布尔 / 数值 / 字符串含 # ）
+python tools/sub-style-conf-verify.py
+
+# 4. 真机 E2E（生产整合包 181 条 PASS）：分轨 / 状态 / 重置 / 字体选择器 /
+#    字幕流连续性 / 预设六用例 / 截图视觉判据 / 灰字与 \pos 顶部字幕 / 黑边贴合 /
+#    最小 MKV 夹具的 Fontsize 通道 / 对外 API 探针
+#    需要 mpv.exe 与装了 Pillow 的 Python（本机为 C:\Python314\python.exe）
 MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
 ```
 
-E2E 的定位顺序：`MPV_EXE` 环境变量 → PATH → 仓库同级目录的 `mpv.exe`。
-uosc 是可选依赖：探测到（`UOSC_MAIN` 环境变量，或 mpv 旁 `portable_config/scripts/uosc/main.lua`）
-时自动复制进 `scripts/uosc/` 由 mpv 自动加载，字体选择器三项断言参与实测；
-探测不到时三项记 SKIP 并打印原因，不影响其余断言。
+E2E 会自动识别两种布局：
+
+- **生产整合包**（仓库上一级目录有 `mpv.exe`）：直接复用现有 `portable_config` 与 uosc，行为与旧版一致。
+- **独立仓库**（本仓库）：读 `MPV_EXE` → PATH，自动追加 `--config-dir=<仓库根>` 与 `--idle=no` 隔离用户全局配置；uosc 从 `UOSC_MAIN` 或 `MPV_EXE` 旁的 `portable_config/scripts/uosc/main.lua` 复制测试副本到 `scripts/uosc/`；该目录已被 `.gitignore` 排除，保留供后续 E2E 复用，不会进入提交或源码分发。找不到 uosc 时字体选择器三项记 SKIP 并打印原因，不影响其余断言。
+- `uosc_staff_credits` 是整合包里的另一份脚本；本仓库没有它时，API 探针自动跳过那 7 条职员表断言（`SUBSTYLE_STAFF_API=0`），**不伪造 PASS**，期望表同步收缩。因此本仓库实测为 **174 条 PASS**（生产整合包 181 条），API 探针 14 / 14。
+
+关键夹具 / 探针：`tools/sub-style-mkv-fixture.py` 用纯 Python 写最小 Matroska（MJPEG 单帧 + 内封 ASS `\pos` 事件），
+不依赖 ffmpeg 也不依赖 4GB 示例视频；`tools/sub-style-probe-{pos,bars,fontsize,api}.lua` 分别覆盖定位字幕、黑边、字号通道与 API。
 
 <a id="sec-9"></a>
 ## 📄 文档
 
-- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论。
+- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论（§19 为 v1.0.10 API 与黑边判据）。
+- [对外 API 契约](docs/api-uosc-subtitle-style.md) —— 状态字段表、请求-响应协议、动作白名单、错误码与集成示例。
 - [贡献指南](CONTRIBUTING.md) —— 门禁清单与代码 / 文档约定。
+- [更新日志](CHANGELOG.md) —— 各版本变更记录。
+- [维护约定](AGENTS.md) —— 项目硬约束与改动前检查。
 - [Release Notes](https://github.com/awujiana/uosc_subtitle_style/releases) —— 各版本发布说明（见 Releases 页面）。
 
 <a id="sec-10"></a>
@@ -346,9 +399,13 @@ uosc 是可选依赖：探测到（`UOSC_MAIN` 环境变量，或 mpv 旁 `porta
 <a id="sec-12"></a>
 ## 🔗 关联仓库
 
-- [awujiana/mpv-awujiana](https://github.com/awujiana/mpv-awujiana) — mpv 整合包，本插件的实际运行环境
+- [awujiana/mpv-bingshan](https://github.com/awujiana/mpv-bingshan) — 冰山 MPV 配置整合包，本脚本的生产运行环境（开箱即用配置树）
+- [awujiana/mpv-script-updater](https://github.com/awujiana/mpv-script-updater) — 公共 `updater.lua` 自更新模块与脚本更新规范（本脚本的文件头 `@version` 由它读取）
+- [awujiana/uosc-staff-credits](https://github.com/awujiana/uosc-staff-credits) — 姊妹实现，同样提供对外 API v1.0.0
 - [awujiana/uosc_danmaku](https://github.com/awujiana/uosc_danmaku) — 同生态的 uosc 弹幕插件
 - [tomasklaen/uosc](https://github.com/tomasklaen/uosc) — 本插件依赖的 uosc UI 框架（第三方）
+
+> 完整的脚本 / 组件仓库索引（表格形式）见 [mpv-bingshan 脚本仓库索引](https://github.com/awujiana/mpv-bingshan/blob/main/docs/script-repositories.md)。
 
 <a id="sec-13"></a>
 ## 📮 作者联系方式

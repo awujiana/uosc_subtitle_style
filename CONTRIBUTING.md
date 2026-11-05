@@ -53,15 +53,17 @@
 2. **改完代码必须跑全部门禁**（判据 = 退出码 + 汇总行，不是 tail）：
 
    ```bash
-   # 语法（glob 相对路径，须在 portable_config/ 或本仓库根下跑）
-   ../luajit.exe tools/lua-syntax-check.lua
-   # 单元测试（191 断言）
-   ../luajit.exe tools/sub-style-test.lua
+   # 语法（glob 相对路径，须在仓库根下跑）
+   luajit tools/lua-syntax-check.lua
+   # 单元测试（328 条断言）
+   luajit tools/sub-style-test.lua
    # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 #）
    python tools/sub-style-conf-verify.py
-   # 真机 E2E（83 断言；需要 mpv.exe 与装了 Pillow 的 Python）
+   # 真机 E2E（生产整合包 181 条 PASS；需 mpv.exe 与装了 Pillow 的 Python）
    MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
    ```
+
+   独立仓库会自动加 `--config-dir=<仓库根>` 隔离配置；没有 `uosc_staff_credits` 时 API 探针跳过 7 条职员表断言（不伪造 PASS）。
 
 3. 新功能请同步补充：conf 项（带中文注释，**注释独立成行**——mpv 不支持行尾注释）、
    消息表（README）、测试用例。
