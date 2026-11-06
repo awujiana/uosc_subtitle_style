@@ -55,11 +55,11 @@
    ```bash
    # 语法（glob 相对路径，须在仓库根下跑）
    luajit tools/lua-syntax-check.lua
-   # 单元测试（328 条断言）
+   # 单元测试（373 条断言）
    luajit tools/sub-style-test.lua
    # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 #）
    python tools/sub-style-conf-verify.py
-   # 真机 E2E（生产整合包 181 条 PASS；需 mpv.exe 与装了 Pillow 的 Python）
+   # 真机 E2E（独立仓库 226 条 PASS；生产整合包 233 条 PASS；需 mpv.exe 与装了 Pillow 的 Python）
    MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
    ```
 

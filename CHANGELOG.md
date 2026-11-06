@@ -7,6 +7,28 @@
 
 暂无。
 
+## [1.0.11] - 2026-11-06
+
+### 新增
+
+- **内封定位字幕可下移**：真机逐通道实测确认带 `\pos` 的 explicit ASS 事件对 `sub-pos` / `sub-scale` / `sub-font-size` / `sub-margin-y` 全部豁免，唯一能改 Y 的是覆盖 ASS `[Script Info]` 的 `PlayResY`。据此新增位移通道：把「上移/下移」与「上下黑边贴合」折成 `ratio` 写进 `PlayResY`，并用 `Fontsize` 除以 `ratio` 补回物理字号。对话轨道本身是 `\pos` 对白时也能整条推进下黑边、点下移即时生效。菜单「其它 → 内封定位字幕可下移」与消息 `ass-pos-shift-toggle` 可关回「保持原位」。
+- **左上角报告可关闭**：conf `show_report=yes`（设 `no` 永久关闭）、菜单「显示左上角检测报告」与消息 `report-toggle`。`flash_tl()` 成为左上角 `show-text` 唯一出口，关闭时不输出、也不临时改 `osd-align-*`；检测 / 黑白预设 / 全内封轨检查 / 黑边贴合 / 位置字号通道全部照常执行。`runtime.report_shown` 计数供 API 与门禁验证。
+- 对外 API 快照新增 `ass_pos_shift_active` / `ass_y_ratio` / `barfit.y_ratio` / `barfit.anchor_target` / `runtime.{ass_pos_shift,show_report,report_shown}`；`call` 白名单新增 `ass-pos-shift-toggle` / `report-toggle`（共 30 个）。API 版本仍为 `1.0.0`（只增可选字段）。
+- 真机门禁：`tools/sub-style-probe-shift.lua` + `tools/sub-style-e2e.py` 第 **5g** 组（`\pos` 对白整条进黑边、点下移生效、关通道复现原报障、开关可逆，15 条）与第 **5h** 组（`show_report=yes|no` 两轮对照、关闭零输出、`report-toggle` 双向生效，各 11 条）。
+
+### 变更
+
+- 菜单步长 **上移/下移 5% → 1%**（conf `nudge=1`），便于把 `\pos` 内封字幕一点点推进黑边。
+- conf 新增 `ass_pos_shift=yes` / `ass_anchor_ratio=0.94` / `show_report=yes`；`sub-style-conf-verify.py` 校验全部键的类型。
+- 单元测试新增 **T56**（1% 步长 / PlayResY / Fontsize 补偿 / 黑边反解 / API 快照）与 **T57**（报告开关），328 → **373 条全绿**；`tools/sub-style-probe-fontsize.lua` 的旧「`\pos` 保持原位」断言同步改为「1% 同步位移」。
+- 架构文档新增 **§20**（位移公式 `y_render = y_ass × 帧高 / PlayResY`、黑边反解、报告开关设计），API 文档 / README / AGENTS 同步。
+
+### 修复
+
+- 「内封字幕点击下移没有反应，只有外挂字幕有反应」：定位字幕不再保持原位，1% 微调通过 `PlayResY` 同步作用于 `\pos` 字幕。
+- 「对话轨道字幕没有在黑边内输出」：黑边贴合对内封 ASS 由反解的 `y_ratio` 把对白盒底送进下黑边，整条字幕完整落入黑边。
+- 关闭报告后 `refresh_barfit()` 的「OSD 微扰补回报告」路径曾会把关掉的报告偷偷放回来，已加 `runtime.show_report` 判断。
+
 ## [1.0.10] - 2026-11-05
 
 ### 新增
