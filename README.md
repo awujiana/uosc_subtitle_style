@@ -400,6 +400,18 @@ E2E 会自动识别两种布局：
 - 文档风格参考《我的 README 风格》输出规范。
 
 <a id="sec-12"></a>
+## 🏷 关联标签
+
+<p align="center">
+  <a href="https://github.com/topics/mpv"><img alt="mpv" src="https://img.shields.io/badge/mpv-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/uosc"><img alt="uosc" src="https://img.shields.io/badge/uosc-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/lua"><img alt="lua" src="https://img.shields.io/badge/lua-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/subtitle"><img alt="subtitle" src="https://img.shields.io/badge/subtitle-1f6feb?style=flat-square"></a>
+  <a href="https://github.com/topics/mpv-script"><img alt="mpv-script" src="https://img.shields.io/badge/mpv--script-1f6feb?style=flat-square"></a>
+</p>
+
+> 以上为本仓库的 GitHub Topics（关联标签）；可在仓库首页 Topics 区或 `gh repo edit awujiana/uosc_subtitle_style --add-topic "..."` 维护。
+
 ## 🔗 关联仓库
 
 - [awujiana/mpv-bingshan](https://github.com/awujiana/mpv-bingshan) — 冰山 MPV 配置整合包，本脚本的生产运行环境（开箱即用配置树）
