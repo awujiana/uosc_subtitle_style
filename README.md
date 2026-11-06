@@ -399,7 +399,6 @@ E2E 会自动识别两种布局：
 - 视觉测试判据依赖 [Pillow](https://python-pillow.org)（仅测试需要，运行时不依赖）。
 - 文档风格参考《我的 README 风格》输出规范。
 
-<a id="sec-12"></a>
 ## 🏷 关联标签
 
 <p align="center">
@@ -412,6 +411,7 @@ E2E 会自动识别两种布局：
 
 > 以上为本仓库的 GitHub Topics（关联标签）；可在仓库首页 Topics 区或 `gh repo edit awujiana/uosc_subtitle_style --add-topic "..."` 维护。
 
+<a id="sec-12"></a>
 ## 🔗 关联仓库
 
 - [awujiana/mpv-bingshan](https://github.com/awujiana/mpv-bingshan) — 冰山 MPV 配置整合包，本脚本的生产运行环境（开箱即用配置树）
