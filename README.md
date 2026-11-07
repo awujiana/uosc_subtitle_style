@@ -11,7 +11,7 @@
 
 <h1>uosc_subtitle_style</h1>
 
-<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理 · v1.0.11</strong>
+<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理 · v1.0.12</strong>
 
 </div>
 
@@ -25,7 +25,7 @@
 
 - [🚀 项目简介](#sec-1)
 - [✨ 核心特色](#sec-2)
-- [🆕 v1.0.6 – v1.0.11 更新要点](#sec-15)
+- [🆕 v1.0.6 – v1.0.12 更新要点](#sec-15)
 - [🖼 展示图](#sec-3)
 - [📦 安装 / 快速开始](#sec-4)
 - [🎮 使用说明](#sec-5)
@@ -75,7 +75,7 @@
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
 
 <a id="sec-15"></a>
-## 🆕 v1.0.6 – v1.0.11 更新要点
+## 🆕 v1.0.6 – v1.0.12 更新要点
 
 | 版本 | 关键变更 |
 | --- | --- |
@@ -85,6 +85,7 @@
 | v1.0.9 | 修复「下移 / 整体缩放无效」：真机证实带 `\pos` 的内封 ASS 对 `sub-pos` / `sub-scale` / `sub-font-size` 全部豁免，缩放与字号改走 `Fontsize`；新增 ±1px 字号微调并存入全局预设；纯 Python 生成最小 Matroska 夹具做真机回归 |
 | v1.0.10 | 上下黑边双对话字幕字号自适应判据（较薄黑边决定倍率、上下同倍率、不溢出）；新增对外 API v1.0.0（状态广播 / 请求-响应 / 白名单转发）；单测扩到 328 条 |
 | v1.0.11 | 修复「内封字幕点下移没反应 / 对话轨道字幕没进黑边」：真机证实 `\pos` explicit ASS 唯一能改 Y 的通道是覆盖 `[Script Info]` 的 `PlayResY`，据此把微调与黑边贴合折成 `ratio` 写进 `PlayResY` 并用 `Fontsize` 反补字号；步长 5% → 1%；新增可关闭的左上角报告（`show_report` / `report-toggle`）；API 快照补 7 个字段、白名单补 2 个动作；单测扩到 373 条 |
+| v1.0.12 | 修复「切换内封字幕轨后字号不匹配」：`Fontsize=` / `PlayResY=` 是按当前轨 ASS 头算的绝对值，现按各轨原生字号占比 `base_fontsize / playres_y` 反解补偿，切轨 / 切 `sid` 都重算；「多行对白最下面一行被裁切」：字号基准只取 `Default`（最下行对白），行数另计进整块盒高做限缩并钳住盒底；「点编辑目标后自动适配的字体恢复默认」：`auto` 样式随编辑目标迁移，不再打回 baseline；单测扩到 388 条 |
 
 > 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的是被自更新器降级过的 v1.0.5 —— **完全退出并重启播放器**。自更新器以文件头 `-- @version:` 判定本地版本，同版本不更新、本地更新时禁止降级。
 
@@ -332,6 +333,7 @@ v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
 - **外挂 ASS 与内封字幕**都支持；样式检测对外挂解析 `[V4+ Styles]`，内封用截图差分。
 - 字体/字号/描边的修改只对**目标轨**生效；**粗体是解码器级共享**（mpv 无分轨粗体通道，菜单已注明）。
 - 带 `\pos` 的 signs/特效幕属于 libass explicit 事件，**位置**不受 `sub-pos` / `sub-scale` / `sub-margin-y` 影响；字体 / 主色 / 描边色 / 字号靠改写 ASS 样式表生效（v1.0.6 / v1.0.9）。**v1.0.11 起**改由覆盖 `[Script Info]` 的 `PlayResY` 做整体比例位移，1% 微调与黑边贴合同步作用于 `\pos` 字幕，`Fontsize` 同比反补保持物理字号；关掉 `ass_pos_shift` 才回到「保持原位」。⚠ 该通道解码器级共享、以画面顶部为原点，次轨 `\pos` 无法同时进上黑边；**禁止** `strip`（丢定位标签且让 style-overrides 整体失效）。
+- **v1.0.12 · 切轨 / 多行 / 编辑目标**：有多种内封字幕的视频切轨后，脚本会按新轨的 `PlayResY` 与 `Default.Fontsize` 反解字号补偿，保持物理字号与首次适配一致（`sid` / `secondary-sid` 切换也会补一次重算）；多行对白**只按最下面一行匹配字号**，行数另计入整块盒高做限缩，本文件内按见过的最大行数保守处理，保证所有行都在视频画面内；点击菜单「编辑目标」时，由彩色检测自动适配的样式会随目标轨迁移，不再恢复默认。三项均不新增配置项。多行盒高的行数来源做了冗余：`sub-text` / `sub-text-ass` / `secondary-sub-text` 任一可用即可；⚠ 图片型视频 + 内封 ASS 的夹具下前两者恒为 nil（不带脚本也一样），故该边界由单测覆盖，真机探针只打印诊断值。
 - 视频**内嵌**上下黑边 ≠ 播放器窗口 letterbox：mpv 的 `sub-use-margins` / `sub-ass-force-margins` 只管后者，本脚本的 `letterbox_*` 用逐行亮度采样处理前者。
 - `sub-margin-y` 是 INT 属性且主 / 次轨共享，脚本会取整并在关闭贴合 / 切文件时显式还原。
 - Windows 实测（mpv 0.41）；Linux/macOS 的字体枚举路径已内置，理论可用但未经真机验证。
@@ -347,7 +349,7 @@ v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
 # 1. Lua 语法门禁（递归检查全部 .lua）
 luajit tools/lua-syntax-check.lua
 
-# 2. 单元测试（373 条断言，stub 掉 mpv API，任意目录可跑）
+# 2. 单元测试（388 条断言，stub 掉 mpv API，任意目录可跑）
 luajit tools/sub-style-test.lua
 
 # 3. conf 静态门禁（按 mpv 解析语义复算：键集合 / 布尔 / 数值 / 字符串含 # ）
@@ -355,7 +357,8 @@ python tools/sub-style-conf-verify.py
 
 # 4. 真机 E2E：分轨 / 状态 / 重置 / 字体选择器 / 字幕流连续性 / 预设六用例 /
 #    截图视觉判据 / 灰字与 \pos 顶部字幕 / 黑边贴合 / 最小 MKV 夹具的 Fontsize
-#    通道 / 对外 API 探针 / 5g \pos 对白进黑边 / 5h show_report 开关两轮对照
+#    通道 / 对外 API 探针 / 5g \pos 对白进黑边 / 5h show_report 开关两轮对照 /
+#    5i 三条内封轨切换字号自动匹配 / 5j 多 Style 下只按最下行对白定字号
 #    需要 mpv.exe 与装了 Pillow 的 Python（本机为 C:\Python314\python.exe）
 MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
 ```
@@ -364,15 +367,17 @@ E2E 会自动识别两种布局：
 
 - **生产整合包**（仓库上一级目录有 `mpv.exe`）：直接复用现有 `portable_config` 与 uosc，行为与旧版一致。
 - **独立仓库**（本仓库）：读 `MPV_EXE` → PATH，自动追加 `--config-dir=<仓库根>` 与 `--idle=no` 隔离用户全局配置；uosc 从 `UOSC_MAIN` 或 `MPV_EXE` 旁的 `portable_config/scripts/uosc/main.lua` 复制测试副本到 `scripts/uosc/`；该目录已被 `.gitignore` 排除，保留供后续 E2E 复用，不会进入提交或源码分发。找不到 uosc 时字体选择器三项记 SKIP 并打印原因，不影响其余断言。
-- `uosc_staff_credits` 是整合包里的另一份脚本；本仓库没有它时，API 探针自动跳过那 7 条职员表断言（`SUBSTYLE_STAFF_API=0`），**不伪造 PASS**，期望表同步收缩。因此本仓库实测为 **226 条 PASS**（生产整合包 233 条），API 探针 14 / 14。
+- `uosc_staff_credits` 是整合包里的另一份脚本；本仓库没有它时，API 探针自动跳过那 7 条职员表断言（`SUBSTYLE_STAFF_API=0`），**不伪造 PASS**，期望表同步收缩。因此本仓库实测为 **250 条 PASS**（生产整合包 257 条），API 探针 14 / 14；v1.0.12 的 5i / 5j 比旧版多 24 条（夹具构建 1 + 三轨切换 17 + 多样式表 6）。
 
 关键夹具 / 探针：`tools/sub-style-mkv-fixture.py` 用纯 Python 写最小 Matroska（MJPEG 单帧 + 内封 ASS `\pos` 事件），
-不依赖 ffmpeg 也不依赖 4GB 示例视频；`tools/sub-style-probe-{pos,bars,fontsize,api,shift}.lua` 分别覆盖定位字幕、黑边、字号通道、API 与 v1.0.11 位移 / 报告开关。
+不依赖 ffmpeg 也不依赖 4GB 示例视频；v1.0.12 起 `styles` / `extra_subs` 可组合出多 Style、任意多条内封轨与 `\N` 多行对白，不传新参数时行为与旧夹具一致。
+`tools/sub-style-probe-{pos,bars,fontsize,api,shift}.lua` 分别覆盖定位字幕、黑边、字号通道、API 与 v1.0.11 位移 / 报告开关；
+`tools/sub-style-probe-tracks.lua` 的 `MODE=switch` / `MODE=styles` 覆盖 v1.0.12 的三轨切轨与多样式表基准。
 
 <a id="sec-9"></a>
 ## 📄 文档
 
-- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论（§19 为 v1.0.10 API 与黑边判据，§20 为 v1.0.11 位移通道 / 黑边反解 / 报告开关）。
+- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论（§19 为 v1.0.10 API 与黑边判据，§20 为 v1.0.11 位移通道 / 黑边反解 / 报告开关，§21 为 v1.0.12 切轨字号补偿 / 多行盒高 / 自动样式迁移）。
 - [对外 API 契约](docs/api-uosc-subtitle-style.md) —— 状态字段表、请求-响应协议、动作白名单、错误码与集成示例。
 - [贡献指南](CONTRIBUTING.md) —— 门禁清单与代码 / 文档约定。
 - [更新日志](CHANGELOG.md) —— 各版本变更记录。

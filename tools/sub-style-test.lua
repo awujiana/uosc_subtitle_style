@@ -2907,6 +2907,188 @@ r57d()
 end
 run_t57()
 
+--------------------------------------------------------------------
+-- T58：v1.0.12 切内封轨自动匹配字号 / 多行按最下行基准 / 编辑目标不重置自动样式
+--
+-- 写进 sub-ass-style-overrides 的 Fontsize= / PlayResY= 是**绝对值**，按当前轨
+-- 的 PlayResY 与 Default.Fontsize 算出。切换内封轨后 ASS 头变了，旧绝对值会把
+-- 上一条轨的物理字号带到新轨（样式对、黑边也对，就是大小不匹配）。
+-- 物理字号（归一化到帧高）= Fontsize / PlayResY。
+--------------------------------------------------------------------
+function run_t58()
+local restore58 = {}
+
+local function ass_header(pry, default_fs, extra)
+    local lines = {
+        '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384',
+        'PlayResY: ' .. tostring(pry), '', '[V4+ Styles]',
+        'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+        'Style: Default,Microsoft YaHei,' .. tostring(default_fs)
+            .. ',&H00FFFFFF,&H000000FF',
+    }
+    for _, s in ipairs(extra or {}) do lines[#lines + 1] = s end
+    lines[#lines + 1] = ''
+    return table.concat(lines, '\n')
+end
+
+local function setup58(header, saved_state)
+    local r = fresh_script_env()
+    env.opt_overrides = {}
+    set_tracks(true)
+    env.props['sub-font-size'] = 38
+    env.props['sub-ass-style-overrides'] = nil
+    env.props['sub-ass-extradata'] = header
+    env.props['sid'] = 1
+    env.props['track-list'] = {{type = 'sub', id = 1}, {type = 'sub', id = 2}}
+    if saved_state then env.vfs[STATE_PATH] = jenc(saved_state) end
+    load_script()
+    return r
+end
+
+local function raw_override58(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return v end
+    end
+    return nil
+end
+local function fontsize58() return tonumber(raw_override58('Fontsize')) end
+local function playres58() return tonumber(raw_override58('PlayResY')) end
+local function ratio58(pry)
+    local p = playres58()
+    return p and p > 0 and (pry / p) or 1
+end
+
+local A = ass_header(288, 21)   -- u_A = 21/288 = 0.0729
+local B = ass_header(720, 40)   -- u_B = 40/720 = 0.0556（另一条轨，字号占比不同）
+
+-- ① 切轨后物理字号保持一致，且绝对覆盖值确实被重算（不是照抄）
+local r58a = setup58(A)
+env.messages['scale']('1.5')
+local fs_a = fontsize58()
+check('t58-track-a-baseline-fontsize',
+    fs_a ~= nil and math.abs(fs_a - 31.5) < 0.01,
+    'Fontsize=' .. tostring(fs_a))
+fire_prop('sub-ass-extradata', A)   -- 登记本文件首个 ASS 头（不触发重算）
+fire_prop('sub-ass-extradata', B)   -- 切轨 → 重算绝对覆盖
+local fs_b = fontsize58()
+check('t58-track-switch-recomputes-absolute-fontsize',
+    fs_a ~= nil and fs_b ~= nil and math.abs(fs_b - fs_a) > 1,
+    string.format('A=%s B=%s', tostring(fs_a), tostring(fs_b)))
+check('t58-track-switch-physical-size-matches',
+    fs_a ~= nil and fs_b ~= nil
+    and math.abs(fs_b / 720 - fs_a / 288) < 0.0005,
+    string.format('physA=%.6f physB=%.6f',
+        (fs_a or 0) / 288, (fs_b or 0) / 720))
+-- 切回原轨应还原
+fire_prop('sub-ass-extradata', A)
+check('t58-track-switch-back-restores',
+    math.abs((fontsize58() or 0) - (fs_a or 0)) < 0.01,
+    'Fontsize=' .. tostring(fontsize58()))
+-- 第三条轨（PlayResY=240 / Default=14）也必须落到同一个物理字号
+local D = ass_header(240, 14)
+fire_prop('sub-ass-extradata', D)
+local fs_d = fontsize58()
+check('t58-track-c-physical-size-matches',
+    fs_d ~= nil and math.abs(fs_d / 240 - fs_a / 288) < 0.0005,
+    string.format('physA=%.6f physC=%.6f',
+        (fs_a or 0) / 288, (fs_d or 0) / 240))
+-- ② 新文件重置 per-file 参照：从新轨自己的字号占比起，不沿用上个文件
+fire_prop('sub-ass-extradata', B)
+env.events['file-loaded']()
+check('t58-per-file-ledger-reset',
+    math.abs((fontsize58() or 0) - 60) < 0.01,
+    'Fontsize=' .. tostring(fontsize58()))
+restore58[#restore58 + 1] = r58a
+
+-- ③ 只按最下面一行（Default）匹配字号：Sign 样式字号大 3 倍也不能拉偏盒高
+--    unit = base 21 × 1.2 × (200/288) = 17.5；usable = 200×0.06×0.9 = 10.8
+--    ⇒ scale = 0.617；若误用 max_fontsize 60 ⇒ scale = 0.216。
+local C = ass_header(288, 21,
+    {'Style: Sign,WenQuanYi Micro Hei,60,&H00FFFFFF,&H000000FF'})
+local r58c = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = C
+env.props['sub-font-size'] = 38
+load_script()
+env.events['file-loaded']()
+flush_timers()
+local scale_single = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-multiline-uses-base-fontsize-not-max',
+    math.abs(scale_single - 0.617) < 0.02,
+    string.format('scale=%.4f Fontsize=%s ratio=%.4f',
+        scale_single, tostring(fontsize58()), ratio58(288)))
+local target_single = ratio58(288) * 0.94
+-- ④ 出现两行对白后按整块盒高重算：字号限缩约一半，锚点不被往下推
+fire_prop('sub-text', '第一行\\N第二行')
+flush_timers()
+local scale_multi = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-multiline-shrinks-whole-box',
+    scale_multi > 0 and scale_multi < scale_single * 0.6,
+    string.format('single=%.4f multi=%.4f', scale_single, scale_multi))
+local target_multi = ratio58(288) * 0.94
+check('t58-multiline-box-stays-inside-frame',
+    target_multi > 0 and target_multi < 1
+    and target_multi <= target_single + 0.002,
+    string.format('target_single=%.4f target_multi=%.4f',
+        target_single, target_multi))
+-- ④b 备用文本通道：真机实测图片型视频 + 内封 ASS 的 sub-text / sub-text-ass
+--    都可恒为 nil，脚本另挂了 sub-text-ass / secondary-sub-text 两路观察器。
+--    这里验证任一路可用时行数同样能进整块盒高（3 行 / 4 行继续限缩）。
+fire_prop('sub-text-ass', '一\\N二\\N三')
+flush_timers()
+local scale_triple = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-backup-sub-text-ass-counts-lines',
+    scale_triple > 0 and scale_triple < scale_multi * 0.75,
+    string.format('multi=%.4f triple=%.4f', scale_multi, scale_triple))
+fire_prop('secondary-sub-text', '一\\N二\\N三\\N四')
+flush_timers()
+local scale_quad = (fontsize58() or 0) * ratio58(288) / 21
+check('t58-backup-secondary-sub-text-counts-lines',
+    scale_quad > 0 and scale_quad < scale_triple * 0.85,
+    string.format('triple=%.4f quad=%.4f', scale_triple, scale_quad))
+restore58[#restore58 + 1] = r58c
+
+-- ⑤ 编辑目标切换不能把自动适配的字体打回 baseline（FontName 会被移出 overrides）
+local r58e = setup58(A, {
+    version = 2,
+    main = {pos = 100, scale = 1, font = 'Microsoft YaHei', size = 42,
+            color = '#FFFFFF', auto = true},
+    sec = {pos = 5, scale = 1},
+    target = 'main',
+})
+local font_before = raw_override58('FontName')
+local size_before = env.props['sub-font-size']
+env.messages['target']('sec')
+check('t58-switch-target-keeps-auto-font',
+    font_before ~= nil and raw_override58('FontName') == font_before,
+    string.format('before=%s after=%s',
+        tostring(font_before), tostring(raw_override58('FontName'))))
+check('t58-switch-target-keeps-auto-size',
+    math.abs((env.props['sub-font-size'] or 0) - (size_before or 0)) < 0.01,
+    string.format('before=%s after=%s',
+        tostring(size_before), tostring(env.props['sub-font-size'])))
+check('t58-switch-target-propagates-auto-flag',
+    (env.vfs[STATE_PATH] or ''):find('"auto":true', 1, true) ~= nil,
+    env.vfs[STATE_PATH])
+restore58[#restore58 + 1] = r58e
+
+-- ⑥ 对照：另一轨已有用户手动样式时仍用该轨自己的样式（不覆盖用户选择）
+local r58f = setup58(A, {
+    version = 2,
+    main = {pos = 100, scale = 1, font = 'Font A', size = 42, auto = true},
+    sec = {pos = 5, scale = 1, font = 'Font B', size = 30},
+    target = 'main',
+})
+env.messages['target']('sec')
+check('t58-switch-target-respects-manual-other-track',
+    raw_override58('FontName') == 'Font B',
+    tostring(raw_override58('FontName')))
+restore58[#restore58 + 1] = r58f
+
+for i = #restore58, 1, -1 do restore58[i]() end
+end
+run_t58()
+
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()
 restore13(); restore14()

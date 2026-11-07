@@ -7,6 +7,23 @@
 
 暂无。
 
+## [1.0.12] - 2026-11-08
+
+### 修复
+
+- **切换内封字幕轨后字号不匹配**：写进 `sub-ass-style-overrides` 的 `Fontsize=` / `PlayResY=` 是按**当前轨** ASS 头算出的绝对值。有多种内封字幕的视频切轨后 `[Script Info] PlayResY` 与 `Default.Fontsize` 可能完全不同，旧绝对值会把上一条轨的物理字号带过去，表现为「字体样式变了、也落进黑边了，但大小不对」。现在按每条轨的原生字号占比 `base_fontsize / playres_y` 反解补偿倍率，使归一化物理字号 `Fontsize / PlayResY` 在切轨前后保持一致；`sub-ass-extradata` 变化与 `sid` / `secondary-sid` 切换都会补一次重算（同一个头只应用一次，用 `nudge_reconfigure()` 触发 `configure_ass`，不重建解码器）。账本在 `file-loaded` 清空，不跨文件泄漏。
+- **多行对白最下面一行被裁切、字号被大标题样式带偏**：黑边贴合的盒高估算原先取 `[V4+ Styles]` 全表 `max_fontsize`，常被顶部标题 / signs 样式拉高。现改为只按最下面一行对白的 `Default` / `base_fontsize` 作字号基准；行数另由 `sub-text` / `sub-text-ass` / `secondary-sub-text` 三路观察器统计（认 `\N` / `\n` / 换行，上限 6 行，0.3s 去抖）累计进整块盒高，让 `compute_barfit()` 按整块限缩，并把盒底目标钳在画面内（`clamp(target, box_frac, 1 - box_frac × 0.1)`）。字号基准与行数解耦：只按最下行匹配字号，同时保证所有行都在视频内。
+- **点「编辑目标」后自动适配的字体恢复默认**：`FontName` / `sub-font-size` 是解码器级共享值，切到另一条空目标轨时 `cur()` 无样式，`FontName=` 会被移出 overrides 列表，字体回到 ASS 原生。现在当来源轨是自动适配（`auto=true`）且新目标轨没有用户手动样式时，把自动样式与 `auto` 标记一起带过去；新目标已有手动样式时仍以用户选择为准。
+
+### 变更
+
+- 单元测试新增 **T58**（切轨物理字号一致 / 三轨 / 切回还原 / per-file 账本重置 / 最下行基准不取 `max_fontsize` / 多行整块盒限缩 / `sub-text-ass` 与 `secondary-sub-text` 备用文本通道 / 编辑目标保留自动样式 / 手动目标对照），373 → **388 条全绿**。
+- **夹具拓展**：`tools/sub-style-mkv-fixture.py` 新增 `styles`（额外 ASS `Style:` 行）与 `extra_subs`（任意多条内封轨，各自指定 `fontsize` / `playres_y` / `events` / `styles`），`events` 可带 `\N` 多行；不传新参数时行为与旧夹具完全一致。
+- 真机门禁新增 `tools/sub-style-probe-tracks.lua` 与 E2E **5i**（三条内封轨逐轨切换，绝对覆盖逐轨重算、归一化物理字号恒为 `0.0833`、切回还原）、**5j**（`Default=20` / `Sign=60` 多样式表下 `Fontsize≈17.02`，误用 `max_fontsize` 会是 `≈5.67`）。5i 不带黑边贴合通道（无 `PlayResY` 覆盖），故其物理字号为 `0.0833`；§21.1 表中 `0.05` 来自带黑边 + `\pos` 的早期诊断夹具，两者都是「切轨前后恒定」这一不变量。全套 E2E 由 226 → **250 条 PASS**（生产整合包 233 → 257），`SUMMARY sub-style-e2e PASS fail=0`。
+- ⚠ 真机边界：MJPEG 单帧 + 内封 ASS 夹具下 mpv **不暴露** `sub-text` / `sub-text-ass`（不带主脚本实测也一样），因此行数统计另挂 `sub-text-ass` / `secondary-sub-text` 两路备用观察器（只参与行数，不改 `inspect_*` 检测时序）；多行盒高的正确性由 T58 覆盖，真机探针只打印诊断值。
+- 架构文档新增 **§21**（切轨补偿公式与真机三轨实测数据、生命周期、多行盒高模型、自动样式随编辑目标迁移、夹具拓展与门禁）。
+- 本次**不新增** conf 配置键、不新增 `script-message`、不新增 API 字段；对外 API 版本仍为 `1.0.0`（无破坏性变更）。`sub-ass-extradata` / `sub-text-ass` / `secondary-sub-text` 只是多了只读观察器。
+
 ## [1.0.11] - 2026-11-06
 
 ### 新增

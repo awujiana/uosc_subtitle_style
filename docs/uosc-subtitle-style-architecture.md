@@ -1146,3 +1146,117 @@ conf 新增 `show_report=yes`（`no` 永久关闭）。设计要点：
 会让 `ass_y_ratio()` 误判成用户位移，造成「关贴合不清残留」的假失败。
 
 > 本次 v1.0.10 → **v1.0.11**。
+
+## 21. v1.0.12：切内封轨字号自动匹配、多行最下行基准与自动样式迁移
+
+### 21.1 报障与根因：绝对覆盖值 × 可变坐标系
+
+用户样本 `Dead-End.Job.S01E03...2160p.NF.WEB-DL...` 带多条内封字幕。切换内封轨后
+字体样式跟着变了、对白也落进了黑边，**唯独字号不匹配**。
+
+根因是「写入的是绝对值，坐标系却随轨道变」：
+
+| 覆盖项 | 写入值 | 依赖 |
+| --- | --- | --- |
+| `Fontsize` | `base_units × size_factor × sc × match / ratio` | 当前轨 `Default.Fontsize` |
+| `PlayResY` | 当前轨 `PlayResY / ratio` | 当前轨 `[Script Info] PlayResY` |
+
+`sub-ass-extradata` 是**当前**字幕轨的 ASS 头（`[Script Info]` + `[V4+ Styles]`），
+切轨后 `PlayResY` 与 `Default.Fontsize` 都可能完全不同；而
+`sub-ass-style-overrides` 是解码器级共享列表，里面躺着按**上一条轨**算出的
+绝对数值。不重算就会把旧轨的物理字号带到新轨。
+
+物理字号（归一化到帧高）：
+
+```text
+physical = Fontsize / PlayResY_effective
+         = (base_fontsize / playres_y) × size_factor × sc × match
+```
+
+令 `u = base_fontsize / playres_y`（无量纲，字号占帧高的比例）。`ass_ref_units`
+记本文件首次适配时的 `u_ref`，切到新轨时取
+`match = clamp(u_ref / u_new, 0.25, 4.0)`，于是 `u_new × match = u_ref`，
+`physical` 恒定。注意 `factor` 乘的是**当前轨**的 `base_units`，所以补偿倍率
+必须按两条轨的占比之比来算，而不是直接改绝对字号。
+
+真机实测（拓展后的三轨夹具，上下 24px 内嵌黑边）：
+
+| 轨 | PlayResY | Default | Fontsize | PlayResY_ov | Fontsize / PlayResY_ov |
+| --- | --- | --- | --- | --- | --- |
+| A | 360 | 20 | 17.0221 | 340.443 | 0.05 |
+| B | 720 | 48 | 34.0443 | 680.885 | 0.05 |
+| C | 240 | 14 | 11.3481 | 226.962 | 0.05 |
+
+三轨绝对覆盖值各不相同，物理字号完全一致 —— 这正是用户要的「自动匹配字体大小」。
+E2E 5i 刻意不启用黑边贴合（无 `PlayResY` 覆盖），实测三轨 `Fontsize=30/60/20`、
+`Fontsize / PlayResY` 恒为 `0.0833`；两组数据绝对值不同是因为 `size_factor` /
+黑边 `ratio` 不同，但「切轨前后归一化物理字号恒定」这一不变量一致。
+
+### 21.2 生命周期：什么时候重算
+
+| 时机 | 动作 |
+| --- | --- |
+| 脚本加载 / `file-loaded` | `ass_ref_units` / `ass_applied_header` / `ass_max_lines` 三个 per-file 账本清零，不跨文件泄漏 |
+| 首个 ASS 头到达 | 由 `file-loaded` 末尾与 `sub-text` 的 `ass_pending` 分支登记；`ass_track_match()` 记下 `u_ref` |
+| `sub-ass-extradata` 变化 | `reapply_ass_track()` 判定「已适配过之后再换头」才补一次 `apply_all(false)` + `nudge_reconfigure()` |
+| `sid` / `secondary-sid` 变化 | 部分 mpv 版本切轨不重发 `sub-ass-extradata`，故 0.1s 后主动补读一次头作双保险 |
+| 稳态刷新 | 只写属性 + `show-text ' ' 60` 重跑 `configure_ass`，**不重建解码器** |
+
+同一个头只应用一次（`ass_applied_header` 去重），避免重复 OSD 微扰。
+`ass_track_match()` 只在字号通道开启时参与；关掉 `ass_fontsize` 是「有意回到
+轨道原样」，此时不补偿。
+
+### 21.3 多行对白：只按最下行匹配字号，整块盒仍要留在视频内
+
+用户截图中两行对白的第二行被画面底边裁掉，同时 `[V4+ Styles]` 里常有
+`Sign` / `Title` 这类远大于 `Default` 的字号。两件事必须解耦：
+
+1. **字号基准只取最下面一行**：`ass_unit_px()` 从 `max_fontsize` 改为
+   `base_fontsize`（`Default`）。`sub-ass-extradata` 只有样式表头、不含
+   `[Events]`，无法可靠知道某一行实际引用了哪个 Style；取全表最大值会被
+   顶部大标题拉偏，把对白压得过小甚至推出画面。
+2. **行数另计进整块盒高**：`ass_line_count()` 认 `\N` / `\n` / 换行，上限 6 行；
+   `ass_max_lines` 取本文件见过的最大值（保守但字号稳定，不会随单句对白
+   单行↔双行来回跳），乘进 `ass_unit_px()` 让 `compute_barfit()` 按整块限缩。
+   `refresh_barfit()` 再把盒底目标钳进画面：`clamp(target, box_frac, 1 - box_frac × 0.1)`，
+   下界保证盒顶不低于帧顶，上界给描边 / 下伸部留余量。
+
+行数来源做了三路冗余：`sub-text` / `sub-text-ass` / `secondary-sub-text`
+都汇入 `ass_note_text()`。⚠ 真机实测 **MJPEG 单帧 + 内封 ASS 夹具下
+`sub-text` 与 `sub-text-ass` 恒为 nil**（不带主脚本也一样，是 mpv 对该
+图片型视频的特性，见 §20.5）；常规视频（用户的 H.265 内封 ASS）会暴露
+`sub-text`。因此备用通道只为稳健性而加，两路备用观察器**不参与** `inspect_*`
+检测时序；多行盒高的正确性由单测 T58 覆盖，真机探针把实测值打进日志作诊断。
+
+### 21.4 自动适配样式不随「编辑目标」丢失
+
+`FontName` / `sub-font-size` / `Fontsize` 都是解码器级共享值，只反映 `cur()`。
+用户从主轨点菜单「编辑目标 → 次字幕」时，若次轨没有手动样式，`cur()` 为空，
+`FontName=` 会被移出 overrides 列表、字号回落 baseline —— 表现为「之前自动
+适配的字体恢复默认了」。
+
+`switch_target()` 现在在来源轨 `auto=true`（彩色检测自动套用预设）且目标轨
+六个样式字段全为 nil 时，把样式与 `auto` 标记一起复制过去；目标轨已有用户
+手动样式时仍以用户选择为准。这只改「自动样式归属」，不动分轨模型本身。
+
+### 21.5 夹具拓展与门禁
+
+`tools/sub-style-mkv-fixture.py` 由「单内封 ASS 轨」拓展为可组合夹具：
+`styles` 追加额外 `Style:` 行，`extra_subs` 追加任意多条内封轨（各自指定
+`fontsize` / `playres_y` / `events` / `styles`），`events` 可带 `\N` 多行与
+`\pos` 定位。不传新参数时行为与旧夹具完全一致。
+
+| 层 | 位置 | 结果 |
+| --- | --- | --- |
+| 单测 | `tools/sub-style-test.lua` T58 | 373 → **388 条全绿** |
+| 真机 5i | `sub-style-probe-tracks.lua MODE=switch` + 三轨夹具 | 15 条探针断言：三轨头可读 / 绝对覆盖逐轨重算 / 物理字号恒为 `0.0833` / 切回还原 |
+| 真机 5j | `MODE=styles` + 多 Style + 多行对白 + 黑边夹具 | 4 条探针断言：`Default` 基准不被 `Sign=60` 拉偏（`Fontsize≈17.02`，误用 max 会是 `≈5.67`） |
+| E2E 全套 | `tools/sub-style-e2e.py` | 独立仓库 226 → **250 条 PASS**（生产整合包 233 → 257），`SUMMARY sub-style-e2e PASS fail=0`，无 Lua error |
+| 语法 / 配置 | `lua-syntax-check.lua` / `sub-style-conf-verify.py` | 全绿 |
+
+⚠ 5i / 5j 场景刻意分开：前者不带多 Style、后者只有单轨，避免把「切轨」
+与「多样式表」两个变量混进同一组（沿用 §20.5 的对照原则）。
+本次不新增 conf 键、不新增 `script-message`、不新增 API 字段，
+对外 API 版本仍为 `1.0.0`。
+
+> 本次 v1.0.11 → **v1.0.12**。

@@ -91,6 +91,7 @@ MKV_FIXTURE = os.path.join(PORTABLE, 'tools', 'sub-style-mkv-fixture.py')
 PROBE_FONTSIZE = os.path.join(PORTABLE, 'tools', 'sub-style-probe-fontsize.lua')
 PROBE_API = os.path.join(PORTABLE, 'tools', 'sub-style-probe-api.lua')
 PROBE_SHIFT = os.path.join(PORTABLE, 'tools', 'sub-style-probe-shift.lua')
+PROBE_TRACKS = os.path.join(PORTABLE, 'tools', 'sub-style-probe-tracks.lua')
 STATE_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-state.json')
 PRESET_FILE = os.path.join(PORTABLE, 'uosc-subtitle-style-preset.json')
 FONT_CACHE = os.path.join(PORTABLE, 'uosc-subtitle-style-fonts.json')
@@ -956,6 +957,92 @@ def main():
             if expect == 'no' else
             ('sh-report-config-read-as-on', 'sh-report-on-actually-shows'))
         shift_asserts('sh-report-%s-' % expect, text, names)
+
+    # ---- 5i/5j. v1.0.12：拓展夹具的多场景真机回归 ----
+    # 5i 三条内封 ASS 轨（PlayResY / Default.Fontsize 各不相同）：切 sid 后
+    #    sub-ass-extradata 会变，Fontsize= / PlayResY= 绝对值必须逐轨重算，
+    #    归一化物理字号 Fontsize/PlayResY 必须恒定。
+    # 5j 单轨 + 多 Style（Default=20 / Sign=60）+ 带 \N 的多行对白 + 黑边：
+    #    黑边贴合的盒高只按 Default 估算，Fontsize 不被大标题样式拉偏。
+    SIGN_STYLE = ('Style: Sign,Arial,60,&H00FFFFFF,&H000000FF,&H00000000,'
+                  '&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1')
+    tr_switch = os.path.join(workdir, 'internal-three-tracks.mkv')
+    mkvmod.build(tr_switch, bars=24,
+                 events=('{\\pos(320,60)}TOPDIALOG',
+                         '{\\pos(320,338)}FIRSTLINE\\NSECONDLINE'),
+                 extra_subs=[
+                     {'fontsize': 48, 'playres_y': 720,
+                      'events': ('{\\pos(320,60)}TRACKB',)},
+                     {'fontsize': 14, 'playres_y': 240,
+                      'events': ('{\\pos(320,60)}TRACKC',)},
+                 ])
+    tr_styles = os.path.join(workdir, 'internal-multistyle.mkv')
+    mkvmod.build(tr_styles, bars=24,
+                 events=('{\\pos(320,60)}TOPDIALOG',
+                         '{\\pos(320,338)}FIRSTLINE\\NSECONDLINE'),
+                 styles=(SIGN_STYLE,))
+    check('tr-fixtures-built',
+          os.path.getsize(tr_switch) > 1024
+          and os.path.getsize(tr_styles) > 1024,
+          '%d / %d bytes' % (os.path.getsize(tr_switch),
+                             os.path.getsize(tr_styles)))
+
+    def run_tracks(tag, mode, fixture):
+        # 与 5g/5h 同理：残留 state 会让 ass_y_ratio() 误判成用户位移
+        for p in (STATE_FILE, PRESET_FILE):
+            if os.path.exists(p):
+                os.remove(p)
+        tlog = os.path.join(workdir, 'tracks-' + tag + '-log.txt')
+        tcmd = [
+            MPV, '--script=' + PROBE_TRACKS,
+            '--vo=gpu', '--ao=null', '--pause=yes',
+            '--image-display-duration=inf',
+            '--watch-later-dir=' + watch_dir,
+            '--save-position-on-quit=no', '--no-resume-playback',
+            '--msg-level=all=info', fixture,
+        ]
+        tenv = dict(env)
+        tenv['SUBSTYLE_TRACKS_MODE'] = mode
+        print('RUN(tracks-%s):' % tag, ' '.join(tcmd))
+        tproc = run_mpv(tcmd, env=tenv,
+                        stdout=open(tlog, 'w'), stderr=subprocess.STDOUT,
+                        timeout=240)
+        print('mpv(tracks-%s) exit=%d' % (tag, tproc.returncode))
+        return open(tlog, encoding='utf-8', errors='replace').read()
+
+    def tracks_asserts(prefix, text, expected):
+        rs = probe_of(text)
+        for name in expected:
+            if name not in rs:
+                check(prefix + name, False, 'missing in log')
+            else:
+                check(prefix + name, rs[name][0] == 'PASS', rs[name][1][:150])
+        sm = re.search(r'PROBE SUMMARY pass=(\d+) fail=(\d+)', text)
+        check(prefix + 'summary-all-ok', bool(sm) and sm.group(2) == '0',
+              sm.group(0) if sm else 'not found')
+        es, ig = lua_errors(text)
+        check(prefix + 'no-lua-errors', len(es) == 0,
+              '; '.join(es[:2]) + (' | 已忽略第三方插件报错 %d 行' % ig if ig else ''))
+
+    tracks_switch_expected = (
+        'tr-three-internal-sub-tracks',
+        'tr-track-a-header-readable', 'tr-track-a-writes-fontsize',
+        'tr-track-b-header-readable', 'tr-track-b-writes-fontsize',
+        'tr-track-b-header-changed', 'tr-track-b-fontsize-recomputed',
+        'tr-track-b-physical-size-matches',
+        'tr-track-c-header-readable', 'tr-track-c-writes-fontsize',
+        'tr-track-c-header-changed', 'tr-track-c-fontsize-recomputed',
+        'tr-track-c-physical-size-matches',
+        'tr-all-tracks-physical-size-constant', 'tr-track-a-restored',
+    )
+    tracks_asserts('tr-switch-', run_tracks('switch', 'switch', tr_switch),
+                   tracks_switch_expected)
+    tracks_styles_expected = (
+        'tr-multi-style-header', 'tr-multi-style-fontsize-uses-base',
+        'tr-multi-style-not-skewed-by-sign', 'tr-multi-style-playres-written',
+    )
+    tracks_asserts('tr-styles-', run_tracks('styles', 'styles', tr_styles),
+                   tracks_styles_expected)
 
     # ---- 6. 清理测试产物 ----
     for p in (STATE_FILE, PRESET_FILE, FONT_CACHE):
