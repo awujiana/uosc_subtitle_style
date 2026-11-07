@@ -2050,39 +2050,62 @@ end
 local function flush_all52()
     for _ = 1, 4 do flush_timers() end
 end
+local function api52()
+    local ok, v = pcall(jdec, env.props['user-data/uosc_subtitle_style/state'] or '{}')
+    return ok and v or {}
+end
+local function it52()
+    local a = api52()
+    return type(a.internal_tracks) == 'table' and a.internal_tracks or {}
+end
 
--- ① 首检：关掉灰色识别，内封全量规则仍然套用；报告列出所有内封轨
+-- ① 首检：关掉灰色识别，内封全量规则仍然套用。
+--    v1.0.13：逐轨进度不再进左上角 OSD（切轨改为一律重检后该文案会误导），
+--    改由 API state 的 internal_tracks 字段结构化输出。
 local r52a = setup52()
 env.messages['toggle-gray']()
 env.events['file-loaded']()
 flush_all52()
 local report52 = last_showtext() or ''
-check('t52-report-lists-all-internal-tracks',
-    report52:find('内封字幕轨：共 2 条', 1, true) ~= nil, report52)
-check('t52-report-shows-checked-count',
-    report52:find('已检查 1 条', 1, true) ~= nil, report52)
-check('t52-report-shows-pending-tracks',
-    report52:find('待检查 2', 1, true) ~= nil, report52)
+local it52a = it52()
+check('t52-report-no-longer-lists-internal-progress',
+    report52:find('内封字幕轨：', 1, true) == nil, report52)
+check('t52-api-lists-all-internal-tracks',
+    it52a.total == 2, jenc(it52a))
+check('t52-api-shows-checked-count',
+    it52a.checked == 1, tostring(it52a.checked))
+check('t52-api-shows-pending-tracks',
+    type(it52a.pending) == 'table' and #it52a.pending == 1
+    and it52a.pending[1] == '2', jenc(it52a.pending or {}))
+check('t52-api-current-track-is-internal',
+    it52a.current_is_internal == true and it52a.current_id == 1,
+    jenc(it52a))
 check('t52-internal-applies-with-gray-off',
     env.props['sub-color'] == '#FFFFFF', tostring(env.props['sub-color']))
 check('t52-internal-report-applied',
     report52:find('已套用预设样式', 1, true) ~= nil, report52)
--- ② 切到另一条内封轨 ⇒ 重新检测并记账
+-- ② 切到另一条内封轨 ⇒ 重新检测并记账（仍走 API，不回 OSD）
 local before52 = #env.showtexts
 fire_prop('sid', 2)
 flush_all52()
 check('t52-switch-sid-triggers-reinspect', #env.showtexts > before52,
     tostring(#env.showtexts - before52))
 local report52b = last_showtext() or ''
-check('t52-second-internal-track-checked',
-    report52b:find('已检查 2 条', 1, true) ~= nil, report52b)
-check('t52-no-pending-after-all-checked',
-    report52b:find('待检查', 1, true) == nil, report52b)
--- ③ 切回已检查过的轨不重复检测
+local it52b = it52()
+check('t52-second-internal-track-checked-api',
+    it52b.checked == 2, jenc(it52b))
+check('t52-no-pending-after-all-checked-api',
+    type(it52b.pending) == 'table' and #it52b.pending == 0,
+    jenc(it52b.pending or {}))
+check('t52-second-report-still-clean',
+    report52b:find('内封字幕轨：', 1, true) == nil, report52b)
+-- ③ v1.0.13：切回已检查过的轨**也要**重新检测。
+--    旧版按「轨 id 是否见过」跳过，切回来时自动预设已被上一条轨清掉，
+--    彩色（非黑白）字幕就原样冒出来了。用户明确要求切换回去也检查。
 local before52c = #env.showtexts
 fire_prop('sid', 1)
 flush_all52()
-check('t52-revisited-track-no-reinspect', #env.showtexts == before52c,
+check('t52-revisited-track-reinspects', #env.showtexts > before52c,
     tostring(#env.showtexts - before52c))
 restore52[#restore52 + 1] = r52a
 
@@ -3088,6 +3111,160 @@ restore58[#restore58 + 1] = r58f
 for i = #restore58, 1, -1 do restore58[i]() end
 end
 run_t58()
+
+--------------------------------------------------------------------
+-- T59 文件 / 字幕轨变化后必须重新检测（v1.0.13）
+--   ① 外挂彩色 → 外挂标准白字 → 切回彩色：每次都要重新跑检测；
+--   ② 内封轨 A → B → A：切回「已检查过」的轨也要重新跑；
+--   ③ 有黑边文件 → end-file → 无黑边文件：黑边位移 / 限缩覆盖不残留。
+--------------------------------------------------------------------
+function run_t59()
+local restore59 = {}
+local EXT_COLORED = 'C:/fake-config/diag-colored.ass'
+local EXT_WHITE = 'C:/fake-config/diag-white.ass'
+
+local function ext_ass(color)
+    return '[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n'
+        .. 'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour\n'
+        .. 'Style: Default,Arial,40,' .. color
+        .. ',&H000000FF,&H00000000\n\n[Events]\n'
+end
+
+local function raw_override59(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return v end
+    end
+    return nil
+end
+
+local function report_count()
+    local n = 0
+    for _, t in ipairs(env.showtexts) do
+        if t and (t:find('已套用预设样式', 1, true)
+                  or t:find('保持原样', 1, true)) then n = n + 1 end
+    end
+    return n
+end
+
+local function setup59(sid)
+    local r = fresh_script_env()
+    set_tracks(false)
+    env.props['sid'] = sid
+    env.props['sub-text'] = '对白'
+    env.props['sub-color'] = '#FFFFFFFF'
+    env.props['sub-ass-override'] = 'scale'
+    env.props['sub-font-size'] = 38
+    env.props['track-list'] = {
+        {type = 'sub', id = 1, external = false},
+        {type = 'sub', id = 2, external = true, ['external-filename'] = EXT_COLORED},
+        {type = 'sub', id = 3, external = true, ['external-filename'] = EXT_WHITE},
+    }
+    env.vfs[EXT_COLORED] = ext_ass('&H000000FF')  -- #FF0000 彩色
+    env.vfs[EXT_WHITE] = ext_ass('&H00FFFFFF')    -- #FFFFFF 标准白字
+    load_script()
+    return r
+end
+
+-- ① 外挂轨：切过去、切回来都要重新检测
+local r59a = setup59(2)
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59a-initial-colored-applies-preset',
+    env.props['sub-color'] == '#FFFFFF'
+        and env.props['sub-ass-override'] == 'force',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+check('t59a-initial-report', report_count() >= 1, 'reports=' .. report_count())
+
+env.showtexts = {}
+fire_prop('sid', 3)
+flush_timers(); flush_timers()
+check('t59a-switch-to-white-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+check('t59a-switch-to-white-clears-auto-style',
+    env.props['sub-color'] == '#FFFFFFFF'
+        and env.props['sub-ass-override'] == 'scale',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+
+env.showtexts = {}
+fire_prop('sid', 2)
+flush_timers(); flush_timers()
+check('t59a-switch-back-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+check('t59a-switch-back-reapplies-preset',
+    env.props['sub-color'] == '#FFFFFF'
+        and env.props['sub-ass-override'] == 'force',
+    string.format('color=%s override=%s', tostring(env.props['sub-color']),
+        tostring(env.props['sub-ass-override'])))
+restore59[#restore59 + 1] = r59a
+
+-- ② 内封轨：切到另一条、再切回已检查过的那条，都要重新检测
+local r59b = bars_env(0, 0, 128)
+env.props['track-list'] = {{type = 'sub', id = 1}, {type = 'sub', id = 2}}
+env.props['sid'] = 1
+load_script()
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59b-initial-internal-inspected', report_count() >= 1,
+    'reports=' .. report_count())
+env.showtexts = {}
+fire_prop('sid', 2)
+flush_timers(); flush_timers()
+check('t59b-internal-switch-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+env.showtexts = {}
+fire_prop('sid', 1)
+flush_timers(); flush_timers()
+check('t59b-internal-switch-back-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+restore59[#restore59 + 1] = r59b
+
+-- ③ 有黑边 → end-file → 无黑边：黑边位移 / 字号覆盖不跨文件残留
+local HDR59 = table.concat({
+    '[Script Info]', 'ScriptType: v4.00+', 'PlayResX: 384',
+    'PlayResY: 288', '', '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF', '',
+}, '\n')
+local r59c = bars_env(12, 12, 128)
+env.props['sub-ass-extradata'] = HDR59
+env.props['sub-ass-style-overrides'] = nil
+load_script()
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59c-first-file-barfit-active',
+    env.props['sub-margin-y'] ~= 34 and raw_override59('PlayResY') ~= nil,
+    string.format('margin=%s PlayResY=%s', tostring(env.props['sub-margin-y']),
+        tostring(raw_override59('PlayResY'))))
+env.raw_shots = {
+    video = barframe48(0, 0, 128, false),
+    subtitles = barframe48(0, 0, 128, true),
+}
+env.showtexts = {}
+env.events['end-file']()
+check('t59c-end-file-clears-ass-overrides',
+    raw_override59('PlayResY') == nil and raw_override59('Fontsize') == nil,
+    string.format('PlayResY=%s Fontsize=%s',
+        tostring(raw_override59('PlayResY')),
+        tostring(raw_override59('Fontsize'))))
+env.events['file-loaded']()
+flush_timers(); flush_timers()
+check('t59c-second-file-margin-restored', env.props['sub-margin-y'] == 34,
+    tostring(env.props['sub-margin-y']))
+check('t59c-second-file-no-playres-shift',
+    raw_override59('PlayResY') == nil, tostring(raw_override59('PlayResY')))
+check('t59c-second-file-fontsize-baseline',
+    math.abs((env.props['sub-font-size'] or 0) - 50) < 0.01,
+    tostring(env.props['sub-font-size']))
+check('t59c-second-file-reinspects', report_count() >= 1,
+    'reports=' .. report_count())
+restore59[#restore59 + 1] = r59c
+
+for i = #restore59, 1, -1 do restore59[i]() end
+end
+run_t59()
 
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()

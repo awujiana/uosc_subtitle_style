@@ -7,6 +7,22 @@
 
 暂无。
 
+## [1.0.13] - 2026-11-08
+
+### 修复
+
+- **关掉有黑边的视频、再打开无黑边视频，字幕样式仍是黑边版**：`sub-ass-style-overrides` 是解码器级共享列表，黑边贴合写进去的 `PlayResY=` / `Fontsize=` 是按上一部片子 ASS 头算出的**绝对值**。旧逻辑只在 `file-loaded` 里 `apply_all()` 重写，但已晚于新文件字幕解码器 init，于是位置仍往下、字号也没有从「非黑白字幕预设」切回基线。现在 `end-file` 立刻用 `strip_managed()` 剔除本脚本托管的覆盖项（保留用户 / 其它脚本写入的项），并在 `file-loaded` 复位 `inspect_scheduled`、杀掉遗留的 `line_refit_timer`，避免旧文件的重试链 / 行数重排定时器污染新文件。
+- **切换内封 / 外挂字幕时没重新检测，切回去也一样**：v1.0.8 的 `reinspect_internal_track()` 只在「切到尚未检查过的内封轨」时放行；切到外挂轨、或切回已检查过的轨时 `inspect_done` 仍为 `true`，彩色（非黑白）字幕原样冒出来，自动预设既不清除也不重新套用。现改为 `reinspect_track()`，按 **sid / secondary-sid 变化**触发：先只清 `auto=true` 的自动样式（用户手动样式不动），0.1s 后重跑检测，并重置 `inspect_total` 让新轨拿到完整重试额度；`inspect_armed` 仍防止抢在首检之前。
+
+### 变更
+
+- **左上角 OSD 检测报告不再输出「内封字幕轨：共 N 条，已检查 M 条（当前外挂）」**：切轨改为一律重检后，`inspected_internal` 账本已不参与放行，该文案会让人误以为漏检。逐轨进度改由对外 API 的 `state.internal_tracks`（`total` / `checked` / `current_id` / `current_is_internal` / `pending`）结构化输出。属**可选附加只读字段**，API 版本仍为 `1.0.0`，不新增 `script-message`、不改白名单。详见 `docs/api-uosc-subtitle-style.md` §3 / §6。
+- 单元测试：新增 **T59**（换片残留 / 外挂切轨 / 内封切轨 / 切回重检 / 定时器复位），并按新行为改写 T52 中「切回已检查过的轨不重检」与逐轨进度报告的旧断言；373 → 388 → **406 条全绿**。
+- **夹具与真机门禁拓展**：新增 `tools/sub-style-probe-reinspect.lua`（`MODE=tracks` / `MODE=files`），E2E 新增 **5k**（1 条内封 ASS + 2 条外挂 ASS，彩色 → 白字 → 切回彩色 → 内封 → 切回彩色，用 `report_shown` 与 `main.auto` 证明每次都真的重检）、**5l**（有黑边 → 无黑边同会话 `loadfile`，验证 `end-file` 清空绝对覆盖、黑边贴合关闭、边距 / 字号 / `ass_y_ratio` 回基线）。全套 E2E 250 → **275 条 PASS**（生产整合包 282），`SUMMARY sub-style-e2e PASS fail=0`。
+- `tools/lua-syntax-check.lua` 的扫描根目录新增 `tools/`：真机探针也是会被 mpv 加载的 Lua，原先只在跑到 E2E 时才暴露语法错误；文件数 27 → **40，FAIL 0**。
+- 架构文档新增 **§22**（跨文件状态生命周期、切轨重检判据、OSD / API 信息分层、门禁矩阵）。
+- 本次**不新增** conf 配置键、`script-message` 入口或 API 版本；对外 API 仍是 `1.0.0`（只增可选只读字段）。`end-file` 清理只操作 `sub-ass-style-overrides`，不重建解码器。
+
 ## [1.0.12] - 2026-11-08
 
 ### 修复

@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.12
+-- @version: 1.0.13
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -765,6 +765,25 @@ local function same_list(a, b)
     return true
 end
 
+-- 剔除本脚本托管的覆盖项，保留用户 / 其它脚本写进列表的项。
+-- apply_style_channel 全量重写列表、end-file 清场都走这里，避免两处重复判据。
+local function strip_managed(list)
+    local kept = {}
+    for _, entry in ipairs(list or {}) do
+        if type(entry) == 'string' then
+            local key = entry:match('^%s*([^=]+)%s*=')
+            local managed = false
+            if key then
+                for _, k in ipairs(MANAGED_OVERRIDE_KEYS) do
+                    if key == k then managed = true; break end
+                end
+            end
+            if not managed then kept[#kept + 1] = entry end
+        end
+    end
+    return kept
+end
+
 local function style_equal(a, b)
     if a == b then return true end
     if not a or not b then return false end
@@ -1048,21 +1067,7 @@ local function apply_style_channel(target_style)
     end
 
     local cur_list = mp.get_property_native('sub-ass-style-overrides') or {}
-    local kept = {}
-    for _, entry in ipairs(cur_list) do
-        if type(entry) == 'string' then
-            local key = entry:match('^%s*([^=]+)%s*=')
-            local managed = false
-            if key then
-                for _, k in ipairs(MANAGED_OVERRIDE_KEYS) do
-                    if key == k then managed = true; break end
-                end
-            end
-            if not managed then kept[#kept + 1] = entry end
-        end
-    end
-    local merged = {}
-    for _, v in ipairs(kept) do merged[#merged + 1] = v end
+    local merged = strip_managed(cur_list)
     for _, v in ipairs(want) do merged[#merged + 1] = v end
     if not same_list(cur_list, merged) then
         mp.set_property_native('sub-ass-style-overrides', merged)
@@ -2417,26 +2422,12 @@ run_inspect = function(gen, allow_retry)
         applied = apply_preset(true, true)
     end
     local report = preset_report(info, applied, skipped_dual)
-    if o.inspect_all_internal then
-        local tracks = internal_subtitle_tracks()
-        if #tracks > 0 then
-            local checked, pending = 0, {}
-            for _, t in ipairs(tracks) do
-                if inspected_internal[t.id] then checked = checked + 1
-                else pending[#pending + 1] = tostring(t.id) end
-            end
-            report = report .. string.format('\n内封字幕轨：共 %d 条，已检查 %d 条（当前 %s）',
-                #tracks, checked, internal_id and tostring(internal_id) or '外挂')
-            if #pending > 0 then
-                -- 真机实测示例 MKV 有 42 条内封字幕轨，全列会把左上角 OSD 撑出屏幕。
-                -- 最多列前 6 条，其余用「等 N 条」概括。
-                local shown = {}
-                for i = 1, math.min(#pending, 6) do shown[i] = pending[i] end
-                local more = #pending > 6 and (' 等 ' .. #pending .. ' 条') or ''
-                report = report .. '，待检查 ' .. table.concat(shown, '/') .. more
-            end
-        end
-    end
+    -- v1.0.13：不再把「内封字幕轨：共 N 条，已检查 M 条」拼进左上角 OSD。
+    --   这段文案是 v1.0.8「按轨记账放行重检」时代的进度提示；切轨改为一律重检后
+    --   账本已不参与放行，切到外挂轨时恒显示「已检查 0 条（当前外挂）」，
+    --   看着像漏检实则只是还没切过去，属于误导信息。
+    --   逐轨进度仍保留在 inspected_internal，并由 api_snapshot() 的
+    --   internal_tracks 字段结构化输出，外部脚本需要时可读（见 API 文档 §3）。
     last_report_text = report
     if report_clear_timer and report_clear_timer.kill then report_clear_timer:kill() end
     report_clear_timer = mp.add_timeout((o.report_ms or 6000) / 1000, function()
@@ -3227,6 +3218,15 @@ mp.register_event('end-file', function()
     in_reset_window = true
     barfit_gen = barfit_gen + 1
     disable_barfit()
+    -- v1.0.13：sub-ass-style-overrides 是解码器级共享列表，黑边贴合写进来的
+    -- PlayResY / Fontsize 是按上一部片子的 ASS 头算出的绝对值。字幕解码器卸载
+    -- 后不清除，会一直留到下一个文件解码器初始化，表现为「位置还在黑边里、
+    -- 字号还是上一部」。file-loaded 的 apply_all 虽会重写，但已晚于解码器 init。
+    local cur = mp.get_property_native('sub-ass-style-overrides') or {}
+    local kept = strip_managed(cur)
+    if not same_list(cur, kept) then
+        mp.set_property_native('sub-ass-style-overrides', kept)
+    end
 end)
 
 -- 启动即应用一次：让 style-overrides 列表在任何字幕轨初始化**之前**就位
@@ -3255,6 +3255,14 @@ mp.register_event('file-loaded', function()
     inspected_internal = {}     -- v1.0.8：新文件重置逐轨检查账本
     inspect_attempts = 0
     inspect_total = 0           -- 新文件的累计尝试额度（硬上限，见 INSPECT_TOTAL_CAP）
+    -- v1.0.13：上个文件可能留着待执行的重试 / 行数重排定时器。前者会让
+    -- inspect_scheduled 一直为 true，新文件采样失败时不再排重试；后者会在
+    -- 新文件里跑一次 refresh_barfit，把黑边状态带回来。
+    inspect_scheduled = false
+    if line_refit_timer then
+        line_refit_timer:kill()
+        line_refit_timer = nil
+    end
     sub_text_was_empty = true   -- 新文件首句对白视为「新一段」
     inspect_armed = false       -- 首检跑过才允许 sub-text 观察器触发，避免提前于 inspect_delay
     ass_pending = runtime.ass_fontsize  -- v1.0.9：等 sub-ass-extradata 就绪后补应用
@@ -3272,19 +3280,17 @@ mp.register_event('file-loaded', function()
         if runtime.bar_fit then refresh_barfit() end
     end)
 end)
--- v1.0.8「所有的内封字幕都要被检查」：
---   旧逻辑一个文件只检测一次（inspect_done=true 后不再重检），文件里其它内封轨
---   （简体/繁体/英文/注释 signs 轨）用户切换过去时永远不会被检查、也不会套用样式。
---   这里按轨放行：切到尚未检查过的内封轨时重置一次性守卫，重新跑检测。
---   已检查过的轨直接跳过，避免来回切轨反复截图；inspect_armed 防止抢在首检之前；
---   INSPECT_TOTAL_CAP 仍是本文件的总尝试硬上限。
-local function reinspect_internal_track()
-    if not o.inspect_all_internal or not inspect_armed then return end
-    local id = current_internal_id()
-    if not id or inspected_internal[id] then return end
-    if inspect_total >= INSPECT_TOTAL_CAP then return end
+-- v1.0.13「切换字幕轨一律重新检测」：
+--   v1.0.8 只放行「尚未检查过的内封轨」，切到外挂轨、或切回已检查过的轨时
+--   inspect_done 仍为 true ⇒ 彩色（非黑白）字幕原样冒出来，自动预设也不会
+--   随轨切换清除 / 重新套用。改为按「轨变化」触发，不再按轨 id 是否见过。
+--   inspect_armed 仍防止抢在首检之前；inspect_total 在用户主动切轨时刷新额度，
+--   让新轨拿到完整重试机会（反复切轨是显式动作，不属于采样失败的无界重试）。
+local function reinspect_track()
+    if not inspect_armed then return end
     inspect_done = false
     inspect_attempts = 0
+    inspect_total = 0
     sub_text_was_empty = true
     -- 内封像素采样要求「还没被我们的 force 白字覆盖」：切到新轨前先撤掉上一条轨
     -- 的自动预设（只清 auto=true，用户手动设的样式不动），否则 inspect_style
@@ -3295,7 +3301,7 @@ local function reinspect_internal_track()
     mp.add_timeout(0.1, function() run_inspect() end)
 end
 local function on_sub_track_change()
-    reinspect_internal_track()
+    reinspect_track()
     -- v1.0.12：部分 mpv 版本切轨不重发 sub-ass-extradata，延迟补读一次，
     -- 保证 Fontsize / PlayResY 不会残留上一条轨的绝对值。
     mp.add_timeout(0.1, function()
@@ -3350,6 +3356,21 @@ local API_CALLS = {
     ['style-preset'] = true, ['reset'] = true, ['fix-override'] = true,
 }
 
+-- v1.0.13：逐轨检查进度改为 API 只读字段，不再占左上角 OSD。
+-- 这是「可选附加字段」，旧调用方不受影响（API 版本仍为 1.0.0）。
+local function internal_track_progress()
+    local tracks = internal_subtitle_tracks()
+    local checked, pending = 0, {}
+    for _, t in ipairs(tracks) do
+        if inspected_internal[t.id] then checked = checked + 1
+        else pending[#pending + 1] = tostring(t.id) end
+    end
+    local id = current_internal_id()
+    return {total = #tracks, checked = checked,
+            current_id = id, current_is_internal = id ~= nil,
+            pending = pending}
+end
+
 local function api_snapshot()
     local function track(k)
         local s = state[k]
@@ -3374,6 +3395,7 @@ local function api_snapshot()
         ass_fontsize_active = ass_channel_active(),
         ass_pos_shift_active = ass_pos_shift_active(),
         ass_y_ratio = ass_y_ratio(),
+        internal_tracks = internal_track_progress(),
         runtime = {override_all = runtime.override_all,
                    include_gray = runtime.include_gray,
                    bar_fit = runtime.bar_fit,
