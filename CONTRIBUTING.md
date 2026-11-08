@@ -53,13 +53,13 @@
 2. **改完代码必须跑全部门禁**（判据 = 退出码 + 汇总行，不是 tail）：
 
    ```bash
-   # 语法（glob 相对路径，须在仓库根下跑；含 tools/ 下的真机探针，共 40 个文件）
+   # 语法（glob 相对路径，须在仓库根下跑；含 tools/ 下的真机探针，共 41 个文件）
    luajit tools/lua-syntax-check.lua
-   # 单元测试（406 条断言）
+   # 单元测试（446 条断言，含 T60 画面边界守护）
    luajit tools/sub-style-test.lua
-   # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 #）
+   # conf 静态门禁（按 mpv 解析语义复算：键集合/布尔/数值/字符串含 #，共 52 项）
    python tools/sub-style-conf-verify.py
-   # 真机 E2E（独立仓库 275 条 PASS；生产整合包 282 条 PASS；需 mpv.exe 与装了 Pillow 的 Python）
+   # 真机 E2E（13 组 5a–5m，本仓库 318 条 PASS / 生产 325 条；需 mpv.exe 与装了 Pillow 的 Python）
    MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
    ```
 

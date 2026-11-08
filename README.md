@@ -9,9 +9,10 @@
 [![Stars](https://img.shields.io/github/stars/awujiana/uosc_subtitle_style?style=flat-square)](https://github.com/awujiana/uosc_subtitle_style/stargazers)
 [![Issues](https://img.shields.io/github/issues/awujiana/uosc_subtitle_style)](https://github.com/awujiana/uosc_subtitle_style/issues)
 
-<h1>uosc_subtitle_style</h1>
+<h1>MPV 内封字幕样式快速切换</h1>
+<h2>uosc_subtitle_style</h2>
 
-<strong>mpv 内封字幕样式快速切换 —— 基于 uosc 菜单，主 / 次字幕（双语）分轨管理 · v1.0.13</strong>
+<strong>基于 uosc 菜单，主 / 次字幕（双语）分轨管理 · v1.0.15</strong>
 
 </div>
 
@@ -25,7 +26,7 @@
 
 - [🚀 项目简介](#sec-1)
 - [✨ 核心特色](#sec-2)
-- [🆕 v1.0.6 – v1.0.13 更新要点](#sec-15)
+- [🆕 v1.0.6 – v1.0.15 更新要点](#sec-15)
 - [🖼 展示图](#sec-3)
 - [📦 安装 / 快速开始](#sec-4)
 - [🎮 使用说明](#sec-5)
@@ -75,7 +76,7 @@
 | 无 uosc 降级 | 未检测到 uosc 时菜单降级为位置循环切换 + OSD 文本列表 |
 
 <a id="sec-15"></a>
-## 🆕 v1.0.6 – v1.0.13 更新要点
+## 🆕 v1.0.6 – v1.0.15 更新要点
 
 | 版本 | 关键变更 |
 | --- | --- |
@@ -87,6 +88,8 @@
 | v1.0.11 | 修复「内封字幕点下移没反应 / 对话轨道字幕没进黑边」：真机证实 `\pos` explicit ASS 唯一能改 Y 的通道是覆盖 `[Script Info]` 的 `PlayResY`，据此把微调与黑边贴合折成 `ratio` 写进 `PlayResY` 并用 `Fontsize` 反补字号；步长 5% → 1%；新增可关闭的左上角报告（`show_report` / `report-toggle`）；API 快照补 7 个字段、白名单补 2 个动作；单测扩到 373 条 |
 | v1.0.12 | 修复「切换内封字幕轨后字号不匹配」：`Fontsize=` / `PlayResY=` 是按当前轨 ASS 头算的绝对值，现按各轨原生字号占比 `base_fontsize / playres_y` 反解补偿，切轨 / 切 `sid` 都重算；「多行对白最下面一行被裁切」：字号基准只取 `Default`（最下行对白），行数另计进整块盒高做限缩并钳住盒底；「点编辑目标后自动适配的字体恢复默认」：`auto` 样式随编辑目标迁移，不再打回 baseline；单测扩到 388 条 |
 | v1.0.13 | 修复「有黑边的视频关掉后再开无黑边视频，字幕仍在黑边里、字号也没切回基线」：`end-file` 立刻剔除 `sub-ass-style-overrides` 里本脚本写入的 `PlayResY` / `Fontsize` 绝对值，并复位遗留的重试 / 行数重排定时器；修复「切换内封 / 外挂字幕（含切回来）不重新检测」：改为任何 `sid` / `secondary-sid` 变化都先清自动预设再重检；左上角报告不再刷「内封字幕轨：共 N 条，已检查 M 条」，逐轨进度改由 API `state.internal_tracks` 输出；单测 406 条、真机 E2E 275 条 |
+| v1.0.14 | 「保持原样」（标准白字黑边 / 双语不改色等未套用预设）的左上角检测报告**默认不再弹出**——常用片源每次切轨都刷这行很干扰观看。新增 conf `show_keep_original=no`（设 `yes` 恢复），与总开关 `show_report` 是「与」关系；套用了预设仍照常显示。API 快照新增 `runtime.show_keep_original` / `runtime.last_report_show`；单测 406 → 412 条 |
+| v1.0.15 | 修复用户截图报障「**对话字幕有一部分在视频外了**」：真机复现 `sub-pos=110 → ratio 1.106` 时底部 `\pos` 对白只剩 5 行像素、`≥120` 时整条消失在视频外。根因是 `PlayResY` 位移通道的手动分支旧上限 `2.0` 放任把字幕推出画面。新增 conf `ass_pos_shift_max=1.06`，手动 1% 微调 / pos 预设 / 黑边贴合反解三条来源统一钳位；到上限继续点下移明确提示；API 快照新增只读 `ass_y_limit`。新增真机探针 `sub-style-probe-bounds.lua` + E2E 第 5m 组（带 / 不带内嵌黑边两夹具，按像素数 / 盒高 / 帧边界三重判据识破「贴边裁切」）+ 单测 T60；单测 412 → 446 条 |
 
 > 若你的 mpv 仍显示旧的「非彩色字幕，保持原样」文案，说明内存里跑的是被自更新器降级过的 v1.0.5 —— **完全退出并重启播放器**。自更新器以文件头 `-- @version:` 判定本地版本，同版本不更新、本地更新时禁止降级。
 
@@ -311,7 +314,7 @@ controls=...,<has_sub>command:tune:script-message-to uosc_subtitle_style open-me
 | `rebuild_delay` | `0.12` | override 切换的延迟设置（秒） |
 | `fallback_cycle` | `yes` | 无 uosc 时降级为循环切换 |
 
-v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
+v1.0.7 – v1.0.15 新增的键（完整清单与注释见 conf 文件）：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
@@ -321,6 +324,8 @@ v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
 | `size_step` / `size_min` / `size_max` / `size_step_saves_preset` | `1` / 见 conf / 见 conf / `yes` | 字号 ±1px 微调的步长、边界，以及黑边贴合时是否把放大值存进全局预设 |
 | `ass_pos_shift` / `ass_anchor_ratio` | `yes` / `0.94` | v1.0.11：用 `PlayResY` 覆盖让 `\pos` 内封对白可下移并落进黑边；锚点比例用于反解黑边目标 |
 | `show_report` | `yes` | v1.0.11：左上角检测报告 OSD 总开关；设 `no` 完全不输出、不改 `osd-align-*`，但检测 / 黑白预设 / 黑边贴合照常执行 |
+| `show_keep_original` | `no` | v1.0.14：未套用预设（保持原样）时是否仍弹左上角报告；与 `show_report` 是「与」关系，套用预设的报告不受影响 |
+| `ass_pos_shift_max` | `1.06` | v1.0.15：`PlayResY` 位移倍率 `ratio` 的**画面边界上限**（可配 `1.0~1.5`，越界 / 非数字回退 1.06）。`\pos` 的 Y 是 ASS 盒底对齐点，盒底 ≈ `ass_anchor_ratio × 帧高 × ratio`，超过 `1/0.94≈1.064` 就会被画面下边缘裁掉。手动微调 / pos 预设 / 黑边反解三条来源都受此限；到上限后继续点下移会明确提示 |
 
 > [!NOTE]
 > mpv 的 conf **不支持行尾注释**（`key=value  # 注释` 会把整段当值），所以仓库里的
@@ -336,6 +341,8 @@ v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
 - 带 `\pos` 的 signs/特效幕属于 libass explicit 事件，**位置**不受 `sub-pos` / `sub-scale` / `sub-margin-y` 影响；字体 / 主色 / 描边色 / 字号靠改写 ASS 样式表生效（v1.0.6 / v1.0.9）。**v1.0.11 起**改由覆盖 `[Script Info]` 的 `PlayResY` 做整体比例位移，1% 微调与黑边贴合同步作用于 `\pos` 字幕，`Fontsize` 同比反补保持物理字号；关掉 `ass_pos_shift` 才回到「保持原位」。⚠ 该通道解码器级共享、以画面顶部为原点，次轨 `\pos` 无法同时进上黑边；**禁止** `strip`（丢定位标签且让 style-overrides 整体失效）。
 - **v1.0.12 · 切轨 / 多行 / 编辑目标**：有多种内封字幕的视频切轨后，脚本会按新轨的 `PlayResY` 与 `Default.Fontsize` 反解字号补偿，保持物理字号与首次适配一致（`sid` / `secondary-sid` 切换也会补一次重算）；多行对白**只按最下面一行匹配字号**，行数另计入整块盒高做限缩，本文件内按见过的最大行数保守处理，保证所有行都在视频画面内；点击菜单「编辑目标」时，由彩色检测自动适配的样式会随目标轨迁移，不再恢复默认。三项均不新增配置项。多行盒高的行数来源做了冗余：`sub-text` / `sub-text-ass` / `secondary-sub-text` 任一可用即可；⚠ 图片型视频 + 内封 ASS 的夹具下前两者恒为 nil（不带脚本也一样），故该边界由单测覆盖，真机探针只打印诊断值。
 - **v1.0.13 · 换片清场 / 切轨重检**：`sub-ass-style-overrides` 是解码器级共享列表，字幕解码器卸载不会清；黑边贴合写进去的 `PlayResY` / `Fontsize` 是按上一部片子算出的绝对值，若留到下一部会把位置与字号一起带过去。现在 `end-file` 立即剔除本脚本托管的覆盖项（用户 / 其它脚本写入的项保留），`file-loaded` 再复位遗留的重试与行数重排定时器。切轨方面**不再按轨 id 去重**：切到内封、切到外挂、切回已检查过的轨都会重新检测——先清掉 `auto=true` 的自动样式（手动样式不动）再采样，所以「切一次非黑白字幕」不会再残留。左上角报告不再输出逐轨进度（切轨一律重检后该文案会误报漏检），需要时读 API `state.internal_tracks`。均不新增配置项。
+- **v1.0.14 · 保持原样默认静音**：常用片源多为标准白字黑边，「非彩色字幕，保持原样」会在每次切轨时刷左上角 OSD。现在默认不弹（`show_keep_original=no`），套用了预设的「已套用预设样式」仍照常显示；`show_report=no` 依旧是彻底关闭一切左上角输出的总开关。
+- **v1.0.15 · 画面边界守护**：`ass_y_ratio()` 恒 ≤ `ass_pos_shift_max`（默认 `1.06`）。带 `\pos` 的 ASS 对白，盒底 ≈ `ass_anchor_ratio × 帧高 × ratio`；旧版把手动位移 clamp 到 `2.0`，连续点下移会把对白推出视频画面（用户截图「一部分在视频外」）。现在手动 1% 微调、pos 预设与黑边贴合反解三条来源统一钳位，`Fontsize` 补偿仍与 `PlayResY` 取同一个 ratio；到上限后继续点下移会明确提示而不是静默吞掉点击。真机门禁 `sub-style-probe-bounds.lua` 用「像素数 ≥ 基线 75% + 盒高不缩水 + 完整在帧内」三重判据守住这条边界——只看 `y1 <= h-1` 会漏判贴边裁切。详见架构文档 §23。
 - 视频**内嵌**上下黑边 ≠ 播放器窗口 letterbox：mpv 的 `sub-use-margins` / `sub-ass-force-margins` 只管后者，本脚本的 `letterbox_*` 用逐行亮度采样处理前者。
 - `sub-margin-y` 是 INT 属性且主 / 次轨共享，脚本会取整并在关闭贴合 / 切文件时显式还原。
 - Windows 实测（mpv 0.41）；Linux/macOS 的字体枚举路径已内置，理论可用但未经真机验证。
@@ -351,7 +358,7 @@ v1.0.7 – v1.0.11 新增的键（完整清单与注释见 conf 文件）：
 # 1. Lua 语法门禁（递归检查全部 .lua）
 luajit tools/lua-syntax-check.lua
 
-# 2. 单元测试（406 条断言，stub 掉 mpv API，任意目录可跑）
+# 2. 单元测试（446 条断言，stub 掉 mpv API，任意目录可跑）
 luajit tools/sub-style-test.lua
 
 # 3. conf 静态门禁（按 mpv 解析语义复算：键集合 / 布尔 / 数值 / 字符串含 # ）
@@ -361,8 +368,12 @@ python tools/sub-style-conf-verify.py
 #    截图视觉判据 / 灰字与 \pos 顶部字幕 / 黑边贴合 / 最小 MKV 夹具的 Fontsize
 #    通道 / 对外 API 探针 / 5g \pos 对白进黑边 / 5h show_report 开关两轮对照 /
 #    5i 三条内封轨切换字号自动匹配 / 5j 多 Style 下只按最下行对白定字号 /
-#    5k 内封⇄外挂切轨（含切回）重检 / 5l 有黑边→无黑边换片清场
+#    5k 内封⇄外挂切轨（含切回）重检 / 5l 有黑边→无黑边换片清场 /
+#    5m 画面边界守护（带 / 不带内嵌黑边两夹具，连续下移不得把对白推出帧外）
 #    需要 mpv.exe 与装了 Pillow 的 Python（本机为 C:\Python314\python.exe）
+#    注：B/E 预设与 5k 切轨轮次显式加 show_keep_original=yes，因为 v1.0.14 起
+#    「保持原样」默认静音会让依赖左上角报告像素 / report_shown 的判据失效；
+#    默认静音本身由单测 T27d / T27e 守。
 MPV_EXE=/path/to/mpv.exe python tools/sub-style-e2e.py
 ```
 
@@ -370,19 +381,20 @@ E2E 会自动识别两种布局：
 
 - **生产整合包**（仓库上一级目录有 `mpv.exe`）：直接复用现有 `portable_config` 与 uosc，行为与旧版一致。
 - **独立仓库**（本仓库）：读 `MPV_EXE` → PATH，自动追加 `--config-dir=<仓库根>` 与 `--idle=no` 隔离用户全局配置；uosc 从 `UOSC_MAIN` 或 `MPV_EXE` 旁的 `portable_config/scripts/uosc/main.lua` 复制测试副本到 `scripts/uosc/`；该目录已被 `.gitignore` 排除，保留供后续 E2E 复用，不会进入提交或源码分发。找不到 uosc 时字体选择器三项记 SKIP 并打印原因，不影响其余断言。
-- `uosc_staff_credits` 是整合包里的另一份脚本；本仓库没有它时，API 探针自动跳过那 7 条职员表断言（`SUBSTYLE_STAFF_API=0`），**不伪造 PASS**，期望表同步收缩。因此本仓库实测为 **275 条 PASS**（生产整合包 282 条），API 探针 14 / 14；v1.0.12 的 5i / 5j 比旧版多 24 条（夹具构建 1 + 三轨切换 17 + 多样式表 6），v1.0.13 的 5k / 5l 再多 25 条（夹具构建 1 + 切轨重检 14 + 换片清场 10）。
+- `uosc_staff_credits` 是整合包里的另一份脚本；本仓库没有它时，API 探针自动跳过那 7 条职员表断言（`SUBSTYLE_STAFF_API=0`），**不伪造 PASS**，期望表同步收缩。因此本仓库 v1.0.15 实测为 **318 条 PASS**（生产整合包 **325 条**，差 7 条），`SUMMARY sub-style-e2e PASS fail=0`，API 探针 14 / 14；其中 v1.0.15 的 5m 两夹具共 41 条（各 `PROBE SUMMARY pass=18 fail=0`），v1.0.13 的 5k / 5l 共 25 条，v1.0.12 的 5i / 5j 共 24 条。
 
 关键夹具 / 探针：`tools/sub-style-mkv-fixture.py` 用纯 Python 写最小 Matroska（MJPEG 单帧 + 内封 ASS `\pos` 事件），
 不依赖 ffmpeg 也不依赖 4GB 示例视频；v1.0.12 起 `styles` / `extra_subs` 可组合出多 Style、任意多条内封轨与 `\N` 多行对白，不传新参数时行为与旧夹具一致。
 `tools/sub-style-probe-{pos,bars,fontsize,api,shift}.lua` 分别覆盖定位字幕、黑边、字号通道、API 与 v1.0.11 位移 / 报告开关；
 `tools/sub-style-probe-tracks.lua` 的 `MODE=switch` / `MODE=styles` 覆盖 v1.0.12 的三轨切轨与多样式表基准；
-`tools/sub-style-probe-reinspect.lua` 的 `MODE=tracks` / `MODE=files` 覆盖 v1.0.13 的内封⇄外挂切轨重检（含切回）与换片清场。
+`tools/sub-style-probe-reinspect.lua` 的 `MODE=tracks` / `MODE=files` 覆盖 v1.0.13 的内封⇄外挂切轨重检（含切回）与换片清场；
+`tools/sub-style-probe-bounds.lua` 覆盖 v1.0.15 的画面边界守护（`bars=24` / `bars=0` 两夹具，判据同时看像素数、盒高与帧边界）。
 
 <a id="sec-9"></a>
 ## 📄 文档
 
-- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论（§19 v1.0.10 API 与黑边判据，§20 v1.0.11 位移通道 / 黑边反解 / 报告开关，§21 v1.0.12 切轨字号补偿 / 多行盒高 / 自动样式迁移，§22 v1.0.13 跨文件状态生命周期与切轨重检）。
-- [对外 API 契约](docs/api-uosc-subtitle-style.md) —— 状态字段表、请求-响应协议、动作白名单、错误码与集成示例。
+- [架构文档](docs/uosc-subtitle-style-architecture.md) —— 数据模型、mpv 能力矩阵、应用引擎、真机实证结论（§19 v1.0.10 API 与黑边判据，§20 v1.0.11 位移通道 / 黑边反解 / 报告开关，§21 v1.0.12 切轨字号补偿 / 多行盒高 / 自动样式迁移，§22 v1.0.13 跨文件状态生命周期与切轨重检，§23 v1.0.15 画面边界守护与真机复现数据）。
+- [对外 API 契约](docs/api-uosc-subtitle-style.md) —— 状态字段表（含 v1.0.15 `ass_y_limit`）、请求-响应协议、动作白名单、错误码与集成示例。
 - [贡献指南](CONTRIBUTING.md) —— 门禁清单与代码 / 文档约定。
 - [更新日志](CHANGELOG.md) —— 各版本变更记录。
 - [维护约定](AGENTS.md) —— 项目硬约束与改动前检查。

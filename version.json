@@ -1,6 +1,6 @@
 {
   "name": "uosc_subtitle_style",
-  "version": "1.0.13",
+  "version": "1.0.15",
   "release_date": "2026-11-08",
   "repository": "https://github.com/awujiana/uosc_subtitle_style",
   "license": "AGPL-3.0",
@@ -9,5 +9,5 @@
     "script": "scripts/uosc_subtitle_style.lua",
     "conf": "script-opts/uosc_subtitle_style.conf"
   },
-  "release_url": "https://github.com/awujiana/uosc_subtitle_style/releases/tag/v1.0.13"
+  "release_url": "https://github.com/awujiana/uosc_subtitle_style/releases/tag/v1.0.15"
 }

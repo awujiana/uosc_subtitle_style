@@ -7,6 +7,29 @@
 
 暂无。
 
+## [1.0.15] - 2026-11-08
+
+### 修复
+
+- **「对话字幕有一部分在视频外了」**：用户截图（960×540）里底部对白从 `y=518` 延伸到 `y=539`，末两行仍有 177~182 个近白像素，字形下半截被画面下边缘直接截断；顶部 signs 完整、画面里没有连续纯黑边，所以不是「没进黑边」，而是 `\pos` 对白盒底越过了视频帧。真机复现（640×360、上下 24px 内嵌黑条 / 无黑条两种夹具）：`sub-pos=100 → ratio 1.000` 时对白 `y342..354` 完整；`110 → 1.106` 只剩 `y357..359` 5 行；`120 → 1.213`、`150` 时整条消失。根因是 v1.0.11 `PlayResY` 位移通道的手动分支旧上限 `2.0`（`ass_y_ratio()` 与 `refresh_barfit()` 反解各一处）放任把字幕推出画面。
+- 新增 conf **`ass_pos_shift_max=1.06`**（有效范围 `1.0~1.5`，越界 / 非数字回退 `1.06`），由 `y_ratio_limit()` 统一供值：手动 1% 微调 / pos 预设 / 黑边贴合反解三条来源都钳到该上限；默认 1.06 留描边余量，同时容得下黑边反解出的 1.057。到上限继续点下移时明确提示「已到画面边界：再下移会让字幕落到视频外，位移已停在上限」，不再静默吞掉点击。`Fontsize` 同比反向补偿保持物理字号。
+
+### 改进
+
+- 对外 API 版本仍为 `1.0.0`，只读快照新增 `ass_y_limit`（生效上限），`state.ass_y_ratio` 恒 ≤ 该值；不新增 `script-message` 入口、不改白名单。见 `docs/api-uosc-subtitle-style.md` §3 / §6。
+- **纳入正式测试流程**：新增 `tools/sub-style-probe-bounds.lua`（`SUBSTYLE_BOUNDS_KIND=bars` / `nobars`），用 `screenshot-raw('subtitles')` 与 `('video')` 差分统计 TOP / BOT 双波段；判据同时检查像素数 ≥ 基线 75%、盒高不缩水、`y0 >= 0`、`y1 <= h-1` —— 只看 `y1` 会漏判「贴边裁切」。`tools/sub-style-e2e.py` 新增第 **5m** 组（两夹具：基线 → pos 110 → 连续两次 nudge 1% → pos 150 → pos 100 复位），各 `PROBE SUMMARY pass=18 fail=0 ALL_OK`。旧探针 `sub-style-probe-fontsize.lua` / `sub-style-probe-shift.lua` 里期待 ratio `>1.4`、位移 `>=20px` 的断言同步改为「钳在 1.06、位移 2~8px 且完整在帧内」。
+- `tools/sub-style-test.lua` 新增 **T60**（conf / 脚本默认值、API 字段、pos 110/150 钳位、连续 12 次 nudge、非法配置回退、自定义 1.03 / 1.2、黑边反解双上限、边界提示、Fontsize 补偿）；因 Lua 5.1 单 chunk 200 局部变量上限，`REAL_IO_OPEN` 刻意用全局保存真实 `io.open`。单测 412 → **446 条全绿**；语法 40 → **41 个文件 FAIL 0**；conf 静态门禁 PASS（52 项）。
+- ⚠ v1.0.14 起「保持原样」默认静音，依赖左上角 OSD 像素 / `report_shown` 的 E2E 轮次（B/E 预设、5k 切轨）显式加 `--script-opts=uosc_subtitle_style-show_keep_original=yes`；默认静音本身由 T27d / T27e 守。
+- 架构文档新增 **§23**（截图判据、真机复现表、根因旧代码、修复后的三重判据与门禁矩阵）；README / AGENTS / CONTRIBUTING 同步门禁数字。
+
+## [1.0.14] - 2026-11-08
+
+### 改进
+
+- 「保持原样」（标准白字黑边 / 双语不改色等未套用自动预设的情形）的左上角检测报告**默认不再弹出**——常用片源每次切轨都刷「非彩色字幕，保持原样」很干扰观看。新增 conf `show_keep_original=no`（设 `yes` 恢复），与总开关 `show_report` 是「与」关系；套用了预设仍照常显示。
+- `runtime.last_report_show` 记录本次 `run_inspect` 是否真的弹了左上角报告，`api_snapshot()` 暴露 `runtime.show_keep_original` / `runtime.last_report_show`；`refresh_barfit()` 的补报告路径同样受此约束。只关显示，检测 / 黑白预设 / 全内封轨检查 / 黑边贴合照常执行。
+- 单测新增 **T27d** / **T27e**，并修正 T32/T37/T48/T59b/T59c 在保持原样场景下需显式打开开关才能验证报告路径；406 → **412 条全绿**。
+
 ## [1.0.13] - 2026-11-08
 
 ### 修复

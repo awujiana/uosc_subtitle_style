@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.13
+-- @version: 1.0.15
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -100,6 +100,16 @@
 --     ⚠ 不要用 sub-ass-override=strip 来「修」位置：实测 strip 会删掉 \pos
 --       让顶部注释/招牌翻译与对白完全重叠，且 sub-ass-style-overrides 整个
 --       失效（Fontsize=30 无任何效果），黑白预设与字号通道都会崩。
+--   * 画面边界守护（v1.0.15）：\pos 的 Y 是 ASS 事件对齐点（默认 \an2，
+--     即盒底中心），PlayResY 除以 ratio ⇒ 盒底约按 ratio 线性放大。
+--     640×360 真机夹具（\pos(320,338)、上下 24px 黑条 / 无黑条两种）：
+--       pos=100 → ratio 1.000 → BOT y319..336 / y342..354（完整）
+--       pos=110 → ratio 1.106 → BOT y355..359（只剩 5 行，下半截被裁）
+--       pos=120 → ratio 1.213 → BOT 无像素（整条对白消失在视频外）
+--     用户截图「对话字幕有一部分在视频外了」即此。旧 ass_y_ratio() 的手动
+--     分支 clamp 到 2.0，等于放任把字幕推出画面。现在统一钳到
+--     ass_pos_shift_max（默认 1.06 ≈ 1/0.94 减去描边余量），黑边贴合的
+--     反解也走同一上限；到达上限后继续点「下移」会明确提示，不静默吞掉。
 --
 -- 入口（script-message）：
 --   open-menu       打开 uosc 菜单（未检测到 uosc 时降级为循环切换）
@@ -150,6 +160,11 @@ local o = {
     -- v1.0.11：左上角 OSD 消息总开关。no = 完全不输出检测报告 / 预设保存提示，
     -- 但样式检测与自动黑白预设**照常执行**（只是不显示），也不改 osd-align-*。
     show_report = true,
+    -- v1.0.14：保持原样（未套用预设）时，是否仍弹左上角 OSD。
+    --   常用片源多为标准白字黑边，每次切轨都刷「非彩色字幕，保持原样」很干扰观看，
+    --   故默认 no（静音）；设为 yes 才恢复显示。与 show_report 是「与」关系：
+    --   show_report=no 仍会在此之上彻底关闭所有左上角输出。
+    show_keep_original = false,
     inspect_retries = 15,     -- 检测重试次数：字幕未及时加载/片头无对白时，等第一句对白出现再检
     inspect_retry_delay = 1.0, -- 检测重试间隔（秒）
     preset_enabled = true,    -- 载入时默认套用预设样式
@@ -216,6 +231,12 @@ local o = {
     -- 2160p 下盒底 y2038 ⇒ 0.943；Netflix/流媒体 ASS 通常在 0.92~0.96。
     -- 只用于把「±1% 屏幕高度」换算成 PlayResY 比例，可用菜单微调自己校准。
     ass_anchor_ratio = 0.94,
+    -- v1.0.15 画面边界守护：PlayResY 位移倍率（ratio）的上限。
+    -- \pos 对白盒底 ≈ ass_anchor_ratio × 帧高 × ratio，超过 1 就被画面
+    -- 下边缘裁掉。0.94 锚点下理论上限 1/0.94 ≈ 1.064，留一点描边余量取
+    -- 1.06；真机实测黑边贴合反解得到 1.057，不会被这个上限误伤。
+    -- 上限同样管住「手动下移 / pos 预设」与「黑边贴合反解」两条来源。
+    ass_pos_shift_max = 1.06,
 }
 options.read_options(o, 'uosc_subtitle_style')
 
@@ -227,6 +248,8 @@ local runtime = {
     ass_fontsize = o.ass_fontsize and true or false,
     ass_pos_shift = o.ass_pos_shift and true or false,
     show_report = o.show_report and true or false,
+    show_keep_original = o.show_keep_original and true or false,
+    last_report_show = false,  -- 本次 run_inspect 是否真的弹了左上角报告（供 API / 门禁验证）
     report_shown = 0,   -- 实际输出过几次左上角消息；供 API / 真机门禁验证开关
 }
 
@@ -894,15 +917,29 @@ local function ass_pos_shift_active()
     return info ~= nil and info.playres_y ~= nil
 end
 
+-- v1.0.15：PlayResY 位移倍率的安全上限（画面边界守护）。
+-- \pos 的 Y 是 ASS 盒底对齐点（默认 \an2），盒底 ≈ anchor × 帧高 × ratio；
+-- ratio 超过 1/anchor 就会被画面下边缘裁掉。真机实测（640×360 夹具）：
+-- ratio 1.106 时底部对白只剩 5 行像素，1.213 时整条消失在视频外。
+-- 默认 1.06 既容得下黑边贴合反解出的 1.057，又留出描边/下伸部余量。
+local function y_ratio_limit()
+    local lim = o.ass_pos_shift_max
+    if type(lim) ~= 'number' or lim < 1 or lim > 1.5 then lim = 1.06 end
+    return lim
+end
+
 -- 当前应施加的 Y 坐标系放大倍率（1 = 不位移，>1 = 整体下移）。
 --   ① 黑边贴合优先：由 detect_bars 的结果反解，把对白锚点送进下黑边；
 --   ② 否则跟随目标轨 sub-pos 相对默认值的偏移，1% 步长同步作用于 \pos 字幕。
+-- 两条来源都过 y_ratio_limit()：黑边贴合的 target 已钳到 <1，但极端黑边 /
+-- 用户改小 anchor 时仍可能算出过大的 ratio；手动分支旧版更是直接放到 2.0。
 -- 刻意**即时求值不缓存**：set_pos / disable_barfit / reset 切换时不会留下
 -- 上次的过期比例；ass_fontsize_override 与 ass_playres_y_override 取同一个值。
 local function ass_y_ratio()
     if not ass_pos_shift_active() then return 1 end
+    local hi = y_ratio_limit()
     if barfit_active() and barfit and barfit.y_ratio then
-        return clamp(barfit.y_ratio, 0.5, 2.0)
+        return clamp(barfit.y_ratio, 0.5, hi)
     end
     local base_pos = is_sec() and (o.sec_pos_default or 0)
         or (o.pos_default or 100)
@@ -911,7 +948,7 @@ local function ass_y_ratio()
         anchor = 0.94
     end
     local delta = (cur().pos - base_pos) / 100
-    return clamp(1 + delta / anchor, 0.5, 2.0)
+    return clamp(1 + delta / anchor, 0.5, hi)
 end
 
 -- 目标轨真正应生效的缩放倍率（黑边贴合 > 双语布局 > 用户设定）
@@ -1381,7 +1418,9 @@ refresh_barfit = function()
         -- v1.0.12：整块盒（含上面几行）都必须留在视频内。盒顶不低于帧顶、
         -- 盒底留出一点余量给描边/下伸部，避免最下面一行被画面底边裁掉。
         target = clamp(target, box_frac, 1 - box_frac * 0.1)
-        fit.y_ratio = clamp(target / anchor, 0.5, 2.0)
+        -- v1.0.15：反解结果同样受画面边界守护，极端黑边 / 改小 anchor 时
+        -- 不会把 \pos 对白推出画面（原上限 2.0 是真机越界的另一条隐患）。
+        fit.y_ratio = clamp(target / anchor, 0.5, y_ratio_limit())
         fit.anchor_target = target
     end
     barfit = fit
@@ -1389,7 +1428,8 @@ refresh_barfit = function()
     nudge_reconfigure()   -- sub-margin-y / sub-scale 无 UPDATE flag，需重跑 configure_ass
     -- OSD 微扰会清掉左上角检测报告，补回来（沿用 flash_tl 已设好的 left/top 对齐）
     -- v1.0.11：show_report=no 时别补，否则关掉的报告会被这条路径偷偷放回来。
-    if runtime.show_report and last_report_text then
+    -- v1.0.14：补回与否同样受「保持原样是否静音」约束（runtime.last_report_show）。
+    if runtime.last_report_show and last_report_text then
         mp.commandv('show-text', last_report_text, o.report_ms or 6000)
     end
     return fit
@@ -1458,8 +1498,15 @@ local function set_pos(v, quiet)
         -- 位移通道开启后 \pos 字幕会跟着动，明确回显比例；关掉时明说
         -- 「保持原位」，避免再次被当成点击无效。
         if ass_pos_shift_active() then
-            text = text .. string.format('（内封 \\pos 定位字幕同步位移 ×%.3f）',
-                ass_y_ratio())
+            local ratio = ass_y_ratio()
+            text = text .. string.format('（内封 \\pos 定位字幕同步位移 ×%.3f）', ratio)
+            -- v1.0.15：到达画面边界上限后继续点「下移」，要明确说明是主动
+            -- 保护而不是「点击没反应」（v1.0.10 的老报障）。
+            local base_pos = is_sec() and (o.sec_pos_default or 0)
+                or (o.pos_default or 100)
+            if cur().pos > base_pos and ratio >= y_ratio_limit() - 0.0005 then
+                text = text .. ' ⚠ 已到画面边界：再下移会让字幕落到视频外，位移已停在上限'
+            end
         elseif ass_channel_active() then
             text = text .. ' ⚠ 内封 \\pos 定位字幕保持原位（请开启「定位字幕可下移」）'
         end
@@ -2434,7 +2481,12 @@ run_inspect = function(gen, allow_retry)
         last_report_text = nil
         report_clear_timer = nil
     end)
-    flash_tl(report, o.report_ms or 6000)
+    -- v1.0.14：保持原样（未套用预设）时，默认不弹左上角 OSD，避免常用片源
+    --   （标准白字黑边）每次切轨都刷「保持原样」干扰观看；conf 用
+    --   show_keep_original=yes 可恢复显示。套用了预设（applied）则照常显示。
+    --   与总开关 show_report 是「与」关系：show_report=no 仍会在此之上彻底关闭一切。
+    runtime.last_report_show = runtime.show_report and (applied or o.show_keep_original)
+    if runtime.last_report_show then flash_tl(report, o.report_ms or 6000) end
 end
 
 --------------------------------------------------------------------
@@ -3395,6 +3447,7 @@ local function api_snapshot()
         ass_fontsize_active = ass_channel_active(),
         ass_pos_shift_active = ass_pos_shift_active(),
         ass_y_ratio = ass_y_ratio(),
+        ass_y_limit = y_ratio_limit(),
         internal_tracks = internal_track_progress(),
         runtime = {override_all = runtime.override_all,
                    include_gray = runtime.include_gray,
@@ -3402,6 +3455,8 @@ local function api_snapshot()
                    ass_fontsize = runtime.ass_fontsize,
                    ass_pos_shift = runtime.ass_pos_shift,
                    show_report = runtime.show_report,
+                   show_keep_original = runtime.show_keep_original,
+                   last_report_show = runtime.last_report_show or false,
                    report_shown = runtime.report_shown},
         preset = {enabled = preset.enabled, only_colored = preset.only_colored,
                   skip_dual = preset.skip_dual, color = preset.color,
