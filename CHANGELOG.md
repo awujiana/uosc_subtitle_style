@@ -7,6 +7,21 @@
 
 暂无。
 
+## [1.0.16] - 2026-11-23
+
+### 修复
+
+- **中日双语字幕被自动转成同字号、两行贴在一起**：`sub-ass-style-overrides` 的 `Fontsize` / `PlayResY` 是解码器级共享项，会改写整张 ASS 样式表，把字幕组原本「中文大、日文小」的多 Style 层级压成同一个字号；同时把两轨一起做 Y 位移，使原本分开的两行贴到一起。用户截图对比确认：脚本开启后两行一样大且几乎重叠，点「恢复默认」后字幕组自带的字号/行距正常。
+- 识别为中日双语后关闭共享 `Fontsize` / `PlayResY` 通道，并让黑边贴合不再接管双语文件：**双轨**交给 mpv 原生 `sub-pos` / `secondary-sub-scale`（`dual_layout_scale` 默认 `0.8`）分开中文与日语；**单轨双语**完全不写 ASS 字号/坐标覆盖，保留原样式表和原始行距。双语状态按文件生成，`end-file` / `file-loaded` 清零，不跨文件泄漏。
+- 语言识别补上常见内封轨 title：`简体中文` / `繁体中文` / `中文` / `汉语`、`日本語` / `日文` / `日语`，以及 `Chinese` / `Japanese` 等英文写法；此前只认 ISO 码，`track-list.lang` 为空时双语布局完全不触发。
+- 单轨双语识别双路：ASS `Style:` 名含 Chinese/Japanese/CN/JP 等语言标记，或对白同时出现日文假名与汉字（UTF-8 字节判据）。后者在字幕到齐后撤回先前写入的样式覆盖，并恢复 mpv 原生分轨/原生样式。
+
+### 改进
+
+- `tools/sub-style-test.lua` 新增 **T61**（双轨 title 识别、`secondary-sub-scale=0.8`、无 `Fontsize`/`PlayResY` 覆盖、单轨多 Style 不压平、文本兜底识别后清场）；单测 446 → **458 条全绿**。
+- `tools/sub-style-mkv-fixture.py` 支持 TrackLanguage（`lang=`），`tools/sub-style-probe-tracks.lua` 新增 `MODE=bilingual`，E2E 新增第 **5n** 组（7 条）验证真机双轨双语不写共享覆盖、日语用原生 scale、两轨位置差 25%；独立仓库全套 **325 条 PASS / 0 FAIL**（5a–5m 旧用例 318 条保持全绿）。
+- 架构文档新增 §24；README / AGENTS / CONTRIBUTING / API 契约同步版本、测试数字与「双语不压平」约定。对外 API 版本仍为 `1.0.0`，不新增字段或动作。
+
 ## [1.0.15] - 2026-11-08
 
 ### 修复

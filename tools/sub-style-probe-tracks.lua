@@ -8,6 +8,10 @@
 --   SUBSTYLE_TRACKS_MODE=styles  单轨 + 多 Style（Default=20 / Sign=60）+
 --                                带 \N 的多行对白 + 上下黑边，验证字号基准
 --                                只取最下行对白、不被大标题样式拉偏
+--   SUBSTYLE_TRACKS_MODE=bilingual 两条内封 ASS 轨（lang=chi / jpn），验证
+--                                双语不再写共享 Fontsize/PlayResY，日语轨用
+--                                原生 secondary-sub-scale 缩小、两轨靠 sub-pos
+--                                拉开距离（v1.0.16 用户截图回归）
 --
 -- 为什么必须有这一组：写进 sub-ass-style-overrides 的 Fontsize= / PlayResY=
 -- 是按当前轨 ASS 头算出的**绝对值**；单测桩是手动 fire_prop 模拟切轨的，
@@ -193,9 +197,44 @@ local function run_styles()
     finish()
 end
 
+-- 5n：中日双语双轨。共享 ASS 通道会把两轨字号压平并把 sub-scale 归 1，
+-- 真机必须看到「无 Fontsize/PlayResY 覆盖 + 日语轨 native scale 0.8 +
+-- 中文 75 / 日语 100 的 sub-pos 距离」。
+local function run_bilingual()
+    local subs = {}
+    for _, t in ipairs(mp.get_property_native('track-list') or {}) do
+        if t.type == 'sub' then
+            subs[#subs + 1] = {id = t.id, lang = tostring(t.lang or '')}
+        end
+    end
+    local langs = {}
+    for _, s in ipairs(subs) do langs[#langs + 1] = s.lang end
+    record('tr-bilingual-two-language-tracks', #subs >= 2
+        and (langs[1] == 'chi' or langs[1] == 'zh')
+        and (langs[2] == 'jpn' or langs[2] == 'ja'),
+        table.concat(langs, ','))
+    local s = snapshot()
+    record('tr-bilingual-no-fontsize-flatten', s.font_ov == nil, desc(s))
+    record('tr-bilingual-no-playres-shift', s.pry_ov == nil, desc(s))
+    local main_pos = mp.get_property_number('sub-pos', -1)
+    local sec_pos = mp.get_property_number('secondary-sub-pos', -1)
+    record('tr-bilingual-native-positions',
+        math.abs(main_pos - 75) < 0.1 and math.abs(sec_pos - 100) < 0.1,
+        string.format('main=%s sec=%s', tostring(main_pos), tostring(sec_pos)))
+    local main_scale = mp.get_property_number('sub-scale', -1)
+    local sec_scale = mp.get_property_number('secondary-sub-scale', -1)
+    record('tr-bilingual-native-jp-scale',
+        math.abs(main_scale - 1) < 0.001 and math.abs(sec_scale - 0.8) < 0.001,
+        string.format('main=%s sec=%s', tostring(main_scale), tostring(sec_scale)))
+    diag_text()
+    finish()
+end
+
 mp.register_event('file-loaded', function()
     -- 等自动检测 / 黑边贴合链落定（与 5g 探针一致的 4.5s）
     after(4.5, function()
-        if MODE == 'styles' then run_styles() else run_switch() end
+        if MODE == 'styles' then run_styles()
+        elseif MODE == 'bilingual' then run_bilingual()
+        else run_switch() end
     end)
 end)

@@ -103,7 +103,8 @@ def _block_group(track_no, text, read_order=None, duration_ms=60000):
 
 
 def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
-          frame_color=(110, 110, 110), styles=(), extra_subs=()):
+          frame_color=(110, 110, 110), styles=(), extra_subs=(),
+          lang=None):
     """写出 MKV，返回 path。bars>0 表示上下各留这么多像素的纯黑条。
 
     v1.0.12 把夹具从「单内封 ASS 轨」拓展成可组合的多场景夹具：
@@ -116,10 +117,14 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
         额外的**内封** ASS 轨列表，每项形如::
 
             {'fontsize': int, 'playres_y': int,
-             'events': tuple[str, ...], 'styles': tuple[str, ...]}
+             'events': tuple[str, ...], 'styles': tuple[str, ...],
+             'lang': str}
 
         轨道号从 3 依次递增。各轨 PlayResY / Default.Fontsize 可故意不同，
-        用来验证「切换内封轨后 Fontsize= / PlayResY= 绝对值必须重算」。
+        用来验证「切换内封轨后 Fontsize= / PlayResY= 绝对值必须重算」；
+        ``lang`` 写进 Matroska TrackLanguage（如 ``chi`` / ``jpn``）用于双语识别。
+    lang
+        第一条字幕轨的 TrackLanguage（如 ``chi``）；不传则不写该元素。
     events
         事件文本可带 ASS ``\\N``，用于构造多行对白；也可带 ``{\\pos(...)}``
         构造 explicit 定位事件。所有既有调用不传新参数时行为完全不变。
@@ -153,13 +158,16 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
         _u('9C', 0),                   # FlagLacing=0
         _el('E0', _u('B0', WIDTH) + _u('BA', HEIGHT)),   # Video/PixelWidth/Height
     ])
-    sub_track = b''.join([
+    sub_track_parts = [
         _u('D7', 2),                   # TrackNumber
         _u('73C5', 3),                 # TrackUID
         _u('83', 17),                  # TrackType=subtitle
         _s('86', 'S_TEXT/ASS'),
         _s('63A2', ass_header),        # CodecPrivate = ASS 头
-    ])
+    ]
+    if lang:
+        sub_track_parts.append(_s('22B59C', lang))
+    sub_track = b''.join(sub_track_parts)
     info = b''.join([
         _u('2AD7B1', 1000000),         # TimecodeScale = 1ms
         _s('4D80', 'sub-style-e2e'),
@@ -167,7 +175,7 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
     ])
     sub_tracks = b''
     for i, spec in enumerate(extra_subs):
-        sub_tracks += _el('AE', b''.join([
+        extra_parts = [
             _u('D7', 3 + i),               # TrackNumber
             _u('73C5', 4 + i),             # TrackUID
             _u('83', 17),                  # TrackType=subtitle
@@ -176,7 +184,10 @@ def build(path, bars=0, fontsize=DEFAULT_FONTSIZE, events=DEFAULT_EVENTS,
                 spec.get('playres_y', HEIGHT),
                 spec.get('fontsize', DEFAULT_FONTSIZE),
                 spec.get('styles') or ())),
-        ]))
+        ]
+        if spec.get('lang'):
+            extra_parts.append(_s('22B59C', spec['lang']))
+        sub_tracks += _el('AE', b''.join(extra_parts))
     tracks = _el('1654AE6B',
                  _el('AE', video_track) + _el('AE', sub_track) + sub_tracks)
 

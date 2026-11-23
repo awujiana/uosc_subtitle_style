@@ -1,5 +1,5 @@
 ---- uosc_subtitle_style.lua —— 内封字幕样式快速切换（uosc 菜单）
--- @version: 1.0.15
+-- @version: 1.0.16
 -- ⚠ 上面这行版本标记由 script-modules/updater.lua 读取，用来判定本地版本：
 --   本地 >= 远端时不更新、绝不降级。改动功能时请同步递增版本号，否则
 --   自更新会认为本地仍是旧版（或误判成同版本反复「已更新」）。
@@ -110,6 +110,11 @@
 --     分支 clamp 到 2.0，等于放任把字幕推出画面。现在统一钳到
 --     ass_pos_shift_max（默认 1.06 ≈ 1/0.94 减去描边余量），黑边贴合的
 --     反解也走同一上限；到达上限后继续点「下移」会明确提示，不静默吞掉。
+--   * 中日双语保持层级（v1.0.16）：共享 Fontsize / PlayResY 会把「中文大、
+--     日文小」的多 Style 原样压成同一字号，并把双轨一起位移到贴在一起。
+--     识别为中日双语后关闭这两个共享通道：双轨交给 mpv 原生
+--     secondary-sub-scale 缩小日语、sub-pos 拉开距离；单轨只用对白里的
+--     假名+汉字或 Style 名判定语言，完全保留 ASS 原字号/原始行距。
 --
 -- 入口（script-message）：
 --   open-menu       打开 uosc 菜单（未检测到 uosc 时降级为循环切换）
@@ -561,6 +566,10 @@ local in_reset_window = false -- end-file 期间 mpv 会按 reset-on-next-file �
 -- CN+JP 双语自动布局（per-file 覆盖层）：非 nil 时 apply_all 用布局值写两轨位置/缩放，
 -- 用户手动设位置/缩放或外部改动即置 nil 关闭。不写状态文件、不跨文件泄漏。
 local layout = nil
+-- v1.0.16：已识别为中日双语。共享的 ASS Fontsize/PlayResY 会把多 style 的
+-- 原始字号层级压平，并吃掉 secondary-sub-scale ⇒ 日语和中文一样大、贴在一起。
+-- 双语文件一律保留原生字号层级：双轨交给 mpv 原生 sub-pos/scale，单轨完全不写覆盖。
+local bilingual_preserve = false
 -- 上下黑边贴合（v1.0.7，per-file 覆盖层）：检测到视频内嵌上下黑条时，
 -- {top, bottom, scale, margin_y}；不写状态文件、不跨文件泄漏。
 -- 优先级高于 CN+JP 布局（黑边贴合要求主轨 100 / 次轨 0，天然分列上下）。
@@ -577,7 +586,8 @@ local refresh_barfit   -- 前向声明：file-loaded 与菜单消息要调用
 local last_report_text = nil
 local report_clear_timer = nil
 local function barfit_active()
-    return runtime.bar_fit and barfit ~= nil
+    -- 双语文件交给原生布局/原始 ASS 字号，黑边贴合会把两轨拉成同一缩放。
+    return runtime.bar_fit and barfit ~= nil and not bilingual_preserve
 end
 
 -- 样式检测状态与前向声明（reset_style / file-loaded / sub-text 观察器都要用）：
@@ -848,6 +858,7 @@ local function ass_style_info()
     local extra = mp.get_property('sub-ass-extradata')
     if type(extra) ~= 'string' or extra == '' then return nil end
     local playres_y, default_fs, max_fs
+    local styles = {}
     for line in extra:gmatch('[^\r\n]+') do
         local y = line:match('^%s*PlayResY%s*:%s*(%d+%.?%d*)')
         if y then playres_y = tonumber(y) end
@@ -856,6 +867,7 @@ local function ass_style_info()
                 '^%s*Style%s*:%s*([^,]-),%s*[^,]-,%s*(%d+%.?%d*)')
             local n = fs and tonumber(fs) or nil
             if n and n > 0 then
+                styles[#styles + 1] = {name = name or '', fontsize = n}
                 if not max_fs or n > max_fs then max_fs = n end
                 if name and name:lower() == 'default' then default_fs = n end
             end
@@ -864,7 +876,40 @@ local function ass_style_info()
     if not (default_fs or max_fs) then return nil end
     return {playres_y = (playres_y and playres_y > 0) and playres_y or nil,
             base_fontsize = default_fs or max_fs,
-            max_fontsize = max_fs}
+            max_fontsize = max_fs,
+            styles = styles}
+end
+
+-- v1.0.16：单轨双语的字幕组常用 Style 名区分语言（Chinese/Japanese、
+-- 中文/日文、CN/JP…）。识别到后就别再用共享 Fontsize 压平它们的字号层级。
+local function ass_style_lang_hint(name)
+    local s = tostring(name or ''):lower()
+    if s:find('japanese', 1, true) or s:find('jpn', 1, true)
+        or s:find('日本語', 1, true) or s:find('日文', 1, true)
+        or s:find('日语', 1, true) or s:find('^jp', 1) then
+        return 'jp'
+    end
+    if s:find('chinese', 1, true) or s:find('mandarin', 1, true)
+        or s:find('chi', 1, true) or s:find('zho', 1, true)
+        or s:find('中文', 1, true) or s:find('汉语', 1, true)
+        or s:find('漢語', 1, true) or s:find('简体', 1, true)
+        or s:find('簡體', 1, true) or s:find('繁体', 1, true)
+        or s:find('繁體', 1, true) or s:find('^cn', 1) then
+        return 'cn'
+    end
+    return nil
+end
+
+local function ass_single_bilingual()
+    if not o.dual_layout or has_secondary_track() then return false end
+    local info = ass_style_info()
+    if not info or not info.styles or #info.styles < 2 then return false end
+    local cn, jp = false, false
+    for _, s in ipairs(info.styles) do
+        local h = ass_style_lang_hint(s.name)
+        if h == 'cn' then cn = true elseif h == 'jp' then jp = true end
+    end
+    return cn and jp
 end
 
 -- v1.0.12：切换内封轨会换掉 sub-ass-extradata（ASS 头），而写进
@@ -906,12 +951,15 @@ end
 
 -- 字号通道（v1.0.9）：把缩放 / 字号折进 ASS Fontsize。
 local function ass_channel_active()
-    return runtime.ass_fontsize and internal_ass_active()
+    -- 双语必须保留每条轨/每条 Style 自己的字号，共享 Fontsize 会把它们抹平。
+    return runtime.ass_fontsize and internal_ass_active() and not bilingual_preserve
 end
 
 -- 位移通道（v1.0.11）：把垂直位移折进 ASS PlayResY。
 -- 必须能读到 PlayResY 才开，否则写不出覆盖项却会误补偿 Fontsize。
 local function ass_pos_shift_active()
+    -- PlayResY 也是解码器级共享：双语文件不能让两种语言一起上下平移。
+    if bilingual_preserve then return false end
     if not (runtime.ass_pos_shift and internal_ass_active()) then return false end
     local info = ass_style_info()
     return info ~= nil and info.playres_y ~= nil
@@ -1153,12 +1201,25 @@ end
 local function lang_code_class(code)
     code = tostring(code or ''):lower():gsub('[%s_%-]', '')
     if code == '' then return nil end
-    if code == 'chi' or code == 'zho' or code == 'zh' or code == 'cmn'
-        or code == 'chs' or code == 'sc' or code == 'gb' or code == 'cn'
-        or code == 'zhcn' or code == 'zhhans' then
+    -- v1.0.16：内封轨 title 常直接写「简体中文 / 日本語」，以前只认 ISO 码，
+    -- 于是双语被当成「未知语言」而完全不布局。
+    if code:find('japanese', 1, true) or code:find('jpn', 1, true)
+        or code:find('日本語', 1, true) or code:find('日文', 1, true)
+        or code:find('日语', 1, true) or code:find('日本', 1, true)
+        or code == 'ja' or code == 'jp' then
+        return 'jp'
+    end
+    if code:find('chinese', 1, true) or code:find('mandarin', 1, true)
+        or code:find('cantonese', 1, true) or code:find('chi', 1, true)
+        or code:find('zho', 1, true) or code:find('中文', 1, true)
+        or code:find('汉语', 1, true) or code:find('漢語', 1, true)
+        or code:find('简体', 1, true) or code:find('簡體', 1, true)
+        or code:find('繁体', 1, true) or code:find('繁體', 1, true)
+        or code:find('国语', 1, true) or code:find('國語', 1, true)
+        or code == 'zh' or code == 'cmn' or code == 'chs' or code == 'sc'
+        or code == 'gb' or code == 'cn' or code == 'zhcn' or code == 'zhhans' then
         return 'cn'
     end
-    if code == 'jpn' or code == 'ja' or code == 'jp' then return 'jp' end
     return nil
 end
 
@@ -1193,6 +1254,8 @@ local function compute_layout()
     elseif mc == 'jp' and sc == 'cn' then jp_key = 'main'
     else return nil end
     local cn_key = (jp_key == 'sec') and 'main' or 'sec'
+    -- 双语下共享 ASS 通道会把两轨字号/位置重新绑在一起，必须让位给原生分轨通道。
+    bilingual_preserve = true
     local jp_pos = PUSH_MAX                                          -- 日文轨置底
     local cn_pos = clamp(jp_pos - o.pos_min_gap, POS_MIN, PUSH_MAX)  -- 中文轨其上，保持避让间距
     local lay = {}
@@ -3209,12 +3272,36 @@ mp.observe_property('sub-ass-extradata', 'string',
 -- 多行对白第一次出现时，按新的整块盒高重算一次黑边贴合（0.3s 去抖）。
 local line_refit_timer = nil
 
+-- v1.0.16：Style 名没有语言标记时，用对白内容兜底识别单轨双语。
+-- UTF-8：日文假名 0xE3 0x81/0x82/0x83 开头；汉字 0xE4..0xE9 开头。
+local function bilingual_text_seen(val)
+    if not o.dual_layout or bilingual_preserve or has_secondary_track() then return false end
+    local s = type(val) == 'string' and val or ''
+    local kana = s:find('\227\129') or s:find('\227\130') or s:find('\227\131')
+    local han = s:find('\230') or s:find('\231') or s:find('\232')
+        or s:find('\233') or s:find('\234') or s:find('\235')
+    return kana ~= nil and han ~= nil
+end
+
+local function preserve_bilingual_now()
+    if bilingual_preserve then return end
+    bilingual_preserve = true
+    local cur = mp.get_property_native('sub-ass-style-overrides') or {}
+    local kept = strip_managed(cur)
+    if not same_list(cur, kept) then
+        mp.set_property_native('sub-ass-style-overrides', kept)
+    end
+    apply_all(false)
+    nudge_reconfigure()
+end
+
 -- v1.0.12：行数统计的统一入口。真机实测 mpv 对图片型视频 + 内封 ASS 的
 -- sub-text 恒为 nil（不带本脚本也一样），所以 sub-text-ass（含 \N 的 ASS
 -- 事件文本）与次轨文本各挂一路备用观察器：任一可用即可让整块盒高生效。
 -- 只在行数变大时更新，重复触发无害；字号基准始终只取最下面一行。
 local function ass_note_text(val)
     if type(val) ~= 'string' or val == '' then return end
+    if bilingual_text_seen(val) then preserve_bilingual_now() end
     local lines = ass_line_count(val)
     if lines <= ass_max_lines then return end
     ass_max_lines = lines
@@ -3268,6 +3355,7 @@ mp.observe_property('secondary-sub-text', 'string',
 -- sub-margin-y 不在该重置列表里，必须在这里显式还原，否则黑边贴合会跨文件泄漏。
 mp.register_event('end-file', function()
     in_reset_window = true
+    bilingual_preserve = false
     barfit_gen = barfit_gen + 1
     disable_barfit()
     -- v1.0.13：sub-ass-style-overrides 是解码器级共享列表，黑边贴合写进来的
@@ -3290,12 +3378,15 @@ mp.register_event('file-loaded', function()
     ass_ref_units = nil
     ass_applied_header = nil
     ass_max_lines = 1
+    bilingual_preserve = false
     -- 自动预设只对彩色字幕生效，不跨文件泄漏：先清除上个文件由「彩色检测」写入的
     -- 样式（auto=true），使新文件从「字幕原样」起；随后 run_inspect 若判定彩色再套用。
     -- 附带好处：清除后内封字幕的像素检测能看到原配色，不被上一处 force+白字干扰而漏检。
     clear_auto_style(state.main)
     clear_auto_style(state.sec)
     layout = compute_layout()   -- CN+JP 双语自动布局（per-file；非中日双语为 nil）
+    -- 单轨双语没有 secondary-sid，靠 ASS Style 名识别；识别后同样保留原字号层级。
+    if not bilingual_preserve and ass_single_bilingual() then bilingual_preserve = true end
     apply_all(false)
     -- 登记本文件首个 ASS 头；之后 sub-ass-extradata 再变即视为「切轨」。
     reapply_ass_track(mp.get_property('sub-ass-extradata'))

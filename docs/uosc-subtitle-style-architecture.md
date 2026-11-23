@@ -1,6 +1,6 @@
 # uosc_subtitle_style.lua 架构文档
 
-> 版本：2026-11-08（当前脚本 `-- @version: 1.0.15`：主/次分轨 + 字体选择器 +
+> 版本：2026-11-23（当前脚本 `-- @version: 1.0.16`：主/次分轨 + 字体选择器 +
 > 描边 + 位置避让 + 灰色/`\pos` 字幕样式表覆盖 + 视频内嵌上下黑边贴合 +
 > 全内封轨检查 + 内封定位 ASS 的 `Fontsize` 缩放/字号通道 + ±1px 字号微调 +
 > `PlayResY` 位移 + 切轨/换片重检 + 对外 API + **画面边界守护**）
@@ -993,7 +993,7 @@ v1.0.7 之后，脚本内部积累了大量「外部脚本想知道但拿不到�
 
 | 标识 | 当前值 | 何时递增 |
 | --- | --- | --- |
-| `-- @version:`（脚本头） | `1.0.15`（本节撰写时为 `1.0.10`；v1.0.11 见 §20，v1.0.15 见 §23） | **任何**功能改动，否则自更新器误判本地版本（§18.7） |
+| `-- @version:`（脚本头） | `1.0.16`（本节撰写时为 `1.0.10`；v1.0.11 见 §20，v1.0.15 见 §23，v1.0.16 见 §24） | **任何**功能改动，否则自更新器误判本地版本（§18.7） |
 | `API_VERSION`（对外契约） | `1.0.0` | 仅不兼容改动：删字段/改类型 → MINOR，改调用格式或回复消息名 → MAJOR |
 
 新增可选字段不升 API 版本；`list-actions` 动态返回白名单，调用方不必硬编码数量。
@@ -1490,3 +1490,56 @@ local ok = s.bot.n > 100
 
 > 本次 v1.0.14 → **v1.0.15**。这是一条**不变量**：`ass_y_ratio()` 恒 ≤ `ass_y_limit`，
 > 任何新增位移来源都必须过 `y_ratio_limit()`，且新增真机断言必须检查「盒高不缩水」。
+
+## 24. v1.0.16：中日双语字幕保留原字号层级
+
+### 24.1 用户报障与根因
+
+用户提供两张对照截图：脚本自动适配后，中文对白与日语对白变成**同一字号**且几乎贴在一起；点「恢复默认」后，字幕组自带的样式恢复为「中文大、日语小、两行有行距」。
+
+根因是 v1.0.9 引入的内封 ASS 共享通道：
+
+| 通道 | 作用域 | 双语副作用 |
+| --- | --- | --- |
+| `sub-ass-style-overrides` 的 `Fontsize=` | 改写解码器级 `track->styles` | 一张 ASS 样式表只有一个 `Fontsize` 覆盖 ⇒ 多 Style 的中文/日文字号层级被压平 |
+| `PlayResY=` | 同样是解码器级共享 | 两轨 `_pos` 一起位移，原本分开的两行贴到一起 |
+| `sub-scale` 被归 1 | 避免普通对白「scale × Fontsize」双叠加 | 吃掉 `dual_layout_scale=0.8`，日语轨不再被缩小 |
+
+换言之，v1.0.9 的通道对「单语种内封对白」是对的，但遇到「字幕组已经排好版的中日双语」就是破坏性覆盖。v1.0.12 的 `ass_track_match()` 又会按首次适配的字号占比把后续轨归一化，进一步把双轨差异抹掉。
+
+### 24.2 修复：双语让位给原生通道
+
+新增 per-file 状态 `bilingual_preserve`：
+
+- `end-file` / `file-loaded` 清零，不写状态文件、不跨文件泄漏；
+- `compute_layout()` 识别为「一中一日」双轨时置 `true`；
+- 单轨 ASS 由 `ass_single_bilingual()` 识别：Style 名含 Chinese/Japanese/CN/JP/中文/日文等标记；
+- 若 Style 名没有语言信息，`ass_note_text()` 在对白里同时检出日文假名（UTF-8 `E3 81/82/83`）与汉字（`E4..E9`）时兜底识别，并撤回此前写入的共享覆盖。
+
+置位后：
+
+```lua
+ass_channel_active()   -> false   -- 不写 Fontsize
+ass_pos_shift_active() -> false   -- 不写 PlayResY
+barfit_active()        -> false   -- 双语不使用黑边贴合的同倍率
+```
+
+双轨布局随之自然落到 mpv 原生通道：
+
+| 轨 | `sub-pos` | `sub-scale` | 说明 |
+| --- | --- | --- | --- |
+| 中文 | `PUSH_MAX - pos_min_gap` = 75 | 1（不动） | 位于日语之上，默认间距 25% 屏高 |
+| 日语 | `PUSH_MAX` = 100 | `dual_layout_scale` = 0.8 | mpv 原生缩放，视觉上小于中文 |
+
+单轨双语不写任何 `Fontsize` / `PlayResY`，字幕组原本的 Style 字号与 `\N` 行距完整保留。轨道语言识别也从只认 ISO 639 扩到 title 常见写法（`简体中文`、`日本語`、`Chinese`、`Japanese` 等）。
+
+### 24.3 门禁
+
+| 层 | 位置 | 结果 |
+| --- | --- | --- |
+| 单测 T61 | `tools/sub-style-test.lua` | 双轨 title 识别、`sub-pos=75/100`、`secondary-sub-scale=0.8`、无 `Fontsize`/`PlayResY`；单轨多 Style 在用户改位置后仍不写覆盖；假名+汉字兜底识别并清场；446 → **458 条全绿** |
+| 真机 5n | `tools/sub-style-probe-tracks.lua` `MODE=bilingual` | 两条 `lang=chi/jpn` 内封 ASS 轨，断言无共享覆盖、原生位置与原生日语缩放；夹具 `sub-style-mkv-fixture.py` 新增 `lang=` |
+| 回归 | E2E 5a–5m | 既有 318 条全部保持 PASS；加上 5n 后独立仓库 **325 条 PASS / 0 FAIL**，`sub-style-test` 全部旧用例不变 |
+
+> v1.0.15 → **v1.0.16** 的不变量：中日双语文件不得写 `Fontsize` / `PlayResY`；
+> 双轨必须用 `secondary-sub-scale` 而非共享通道缩小日语。API 版本不变。

@@ -41,6 +41,9 @@
 #       pos 110/111/112/150，底部 \pos 对白必须「盒高不缩水 + 完整在帧内」，
 #       PlayResY 倍率被钳在 ass_pos_shift_max，顶部 signs 仍可见。回归用户
 #       截图「对话字幕有一部分在视频外了」（修复前 pos=110 只剩 5 行像素）。
+#   5n. v1.0.16 中日双语双内封轨（lang=chi / jpn）：不得写共享 Fontsize /
+#       PlayResY；日语轨用原生 secondary-sub-scale 缩小，两轨用 sub-pos
+#       拉开距离。回归用户截图「中文和日语一样大、两行贴在一起」。
 #   ⚠ 第三方插件（.gitmodules 里的 submodule）自身的 Lua 报错由 lua_errors()
 #     按日志标签隔离，被测脚本与探针的任何报错仍然算 FAIL。
 # 用法（在 portable_config/ 下）：python tools/sub-style-e2e.py
@@ -998,11 +1001,19 @@ def main():
                  events=('{\\pos(320,60)}TOPDIALOG',
                          '{\\pos(320,338)}FIRSTLINE\\NSECONDLINE'),
                  styles=(SIGN_STYLE,))
+    tr_bilingual = os.path.join(workdir, 'internal-cn-jp.mkv')
+    mkvmod.build(tr_bilingual, bars=0,
+                 lang='chi',
+                 events=('能够想象到 回转的景象',),
+                 extra_subs=[{'lang': 'jpn',
+                              'events': ('「イメージ」はあるんだ',)}])
     check('tr-fixtures-built',
           os.path.getsize(tr_switch) > 1024
-          and os.path.getsize(tr_styles) > 1024,
-          '%d / %d bytes' % (os.path.getsize(tr_switch),
-                             os.path.getsize(tr_styles)))
+          and os.path.getsize(tr_styles) > 1024
+          and os.path.getsize(tr_bilingual) > 1024,
+          '%d / %d / %d bytes' % (os.path.getsize(tr_switch),
+                                  os.path.getsize(tr_styles),
+                                  os.path.getsize(tr_bilingual)))
 
     def run_tracks(tag, mode, fixture):
         # 与 5g/5h 同理：残留 state 会让 ass_y_ratio() 误判成用户位移
@@ -1018,6 +1029,9 @@ def main():
             '--save-position-on-quit=no', '--no-resume-playback',
             '--msg-level=all=info', fixture,
         ]
+        if mode == 'bilingual':
+            tcmd.insert(-1, '--sid=1')
+            tcmd.insert(-1, '--secondary-sid=2')
         tenv = dict(env)
         tenv['SUBSTYLE_TRACKS_MODE'] = mode
         print('RUN(tracks-%s):' % tag, ' '.join(tcmd))
@@ -1060,6 +1074,16 @@ def main():
     )
     tracks_asserts('tr-styles-', run_tracks('styles', 'styles', tr_styles),
                    tracks_styles_expected)
+    tracks_bilingual_expected = (
+        'tr-bilingual-two-language-tracks',
+        'tr-bilingual-no-fontsize-flatten',
+        'tr-bilingual-no-playres-shift',
+        'tr-bilingual-native-positions',
+        'tr-bilingual-native-jp-scale',
+    )
+    tracks_asserts('tr-bilingual-',
+                   run_tracks('bilingual', 'bilingual', tr_bilingual),
+                   tracks_bilingual_expected)
 
     # ---- 5k/5l. v1.0.13：切轨与换片都必须重新检测 / 清场 ----
     # 5k 用「1 条内封 ASS + 2 条外挂 ASS」组合夹具，覆盖内封⇄外挂、彩色⇄白字、

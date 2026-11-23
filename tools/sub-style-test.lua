@@ -3525,6 +3525,113 @@ r60c()
 end
 run_t60()
 
+--------------------------------------------------------------------
+-- T61 中日双语字幕：不得把原有字号层级压平
+--   ① 双轨（中/日）内封 ASS：关闭共享 Fontsize/PlayResY，改用 mpv 原生
+--      sub-scale/secondary-sub-scale 缩小日语轨，并用 sub-pos 拉开两轨距离；
+--   ② 单轨 ASS 多 Style（中文/日文）：保留 ASS 原生字号，不再写 Fontsize；
+--   ③ 对白里同时出现假名与汉字时，也要识别为单轨双语并撤掉已写的样式覆盖。
+--------------------------------------------------------------------
+function run_t61()
+local ASS61 = table.concat({
+    '[Script Info]',
+    'ScriptType: v4.00+',
+    'PlayResX: 384',
+    'PlayResY: 288',
+    '',
+    '[V4+ Styles]',
+    'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour',
+    'Style: Default,Microsoft YaHei,21,&H00FFFFFF,&H000000FF',
+    'Style: Chinese,Microsoft YaHei,36,&H00FFFFFF,&H000000FF',
+    'Style: Japanese,MS Gothic,20,&H00FFFFFF,&H000000FF',
+    '',
+}, '\n')
+
+local function ov61(key)
+    for _, e in ipairs(env.props['sub-ass-style-overrides'] or {}) do
+        local v = e:match('^' .. key .. '=(.+)$')
+        if v then return tonumber(v) end
+    end
+    return nil
+end
+
+local function setup61(has_sec, titles)
+    local r = fresh_script_env()
+    set_tracks(has_sec)
+    env.props['sid'] = 1
+    env.props['secondary-sid'] = has_sec and 2 or nil
+    env.props['sub-pos'] = 100
+    env.props['secondary-sub-pos'] = 0
+    env.props['sub-scale'] = 1
+    env.props['secondary-sub-scale'] = 1
+    env.props['sub-font-size'] = 38
+    env.props['sub-ass-override'] = 'scale'
+    env.props['secondary-sub-ass-override'] = 'strip'
+    env.props['sub-ass-extradata'] = ASS61
+    env.props['sub-ass-style-overrides'] = nil
+    if has_sec then
+        env.props['track-list'] = {
+            {type = 'sub', id = 1, title = titles and titles[1] or 'chi'},
+            {type = 'sub', id = 2, title = titles and titles[2] or 'jpn'},
+        }
+    else
+        env.props['track-list'] = {{type = 'sub', id = 1}}
+    end
+    load_script()
+    env.events['file-loaded']()
+    return r
+end
+
+-- ① 中文轨道标题 + 日文轨道标题（非 ISO 语言码）也要识别；双轨用原生分轨缩放
+local r61a = setup61(true, {'简体中文', '日本語'})
+check('t61-dual-title-recognized-cn-pos', env.props['sub-pos'] == 75,
+    tostring(env.props['sub-pos']))
+check('t61-dual-title-recognized-jp-pos', env.props['secondary-sub-pos'] == 100,
+    tostring(env.props['secondary-sub-pos']))
+check('t61-dual-native-jp-scale', math.abs((env.props['secondary-sub-scale'] or 0) - 0.8) < 0.001,
+    tostring(env.props['secondary-sub-scale']))
+check('t61-dual-no-fontsize-flatten', ov61('Fontsize') == nil, tostring(ov61('Fontsize')))
+check('t61-dual-no-playres-shift', ov61('PlayResY') == nil, tostring(ov61('PlayResY')))
+r61a()
+
+-- ② 单轨 ASS 多 Style：即便用户改过位置，也不能把中文/日文样式压成同一字号
+local r61b = setup61(false)
+env.messages['pos']('75')
+check('t61-single-style-no-fontsize-flatten', ov61('Fontsize') == nil,
+    tostring(ov61('Fontsize')))
+check('t61-single-style-no-playres-shift', ov61('PlayResY') == nil,
+    tostring(ov61('PlayResY')))
+check('t61-single-style-manual-pos-kept', env.props['sub-pos'] == 75,
+    tostring(env.props['sub-pos']))
+r61b()
+
+-- ③ Style 名不含语言标记时，用「假名 + 汉字」的对白内容识别并撤回已写覆盖
+local ASS61_NEUTRAL = (ASS61:gsub('Style: Chinese,', 'Style: Top,'):gsub('Style: Japanese,', 'Style: Bottom,'))
+local r61c = fresh_script_env()
+set_tracks(false)
+env.props['sid'] = 1
+env.props['sub-pos'] = 100
+env.props['sub-scale'] = 1
+env.props['sub-font-size'] = 38
+env.props['sub-ass-override'] = 'scale'
+env.props['sub-ass-extradata'] = ASS61_NEUTRAL
+env.props['sub-ass-style-overrides'] = nil
+env.props['track-list'] = {{type = 'sub', id = 1}}
+load_script()
+env.events['file-loaded']()
+env.messages['pos']('75')
+check('t61-text-before-has-fontsize', ov61('Fontsize') ~= nil, tostring(ov61('Fontsize')))
+local observer61 = env.observers['sub-text']
+if observer61 then
+    observer61('sub-text', '「イメージ」はあるんだ\\N能够想象到 回转的景象')
+end
+check('t61-text-detected-clears-fontsize', ov61('Fontsize') == nil, tostring(ov61('Fontsize')))
+check('t61-text-detected-clears-playres', ov61('PlayResY') == nil, tostring(ov61('PlayResY')))
+check('t61-text-manual-pos-kept', env.props['sub-pos'] == 75, tostring(env.props['sub-pos']))
+r61c()
+end
+run_t61()
+
 for _, r in ipairs(restore50) do r() end
 restore51(); restore49(); restore48()
 restore13(); restore14()
